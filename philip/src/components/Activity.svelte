@@ -4,17 +4,14 @@
   import Post from "./Post.svelte";
   import { xhr, ensureObject } from "../utils";
 
+  let pgi = pubgate_instance;
   let postObject;
   let isReaction = false;
 
   if (["Announce", "Like"].includes(post.type)) {
-    postObject = ensureObject(post.object);
-    // if (typeof post.object === "string") {
-    //     fpost = xhr(post.object);
-    //     postObject = fpost => fpost.object;
-    // } else {
-    //     postObject = post.object;
-    // }
+     postObject = pgi
+      ? post.object
+      : ensureObject(post.object);
     isReaction = true;
   }
 </script>
