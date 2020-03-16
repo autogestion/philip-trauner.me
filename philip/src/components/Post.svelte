@@ -6,6 +6,7 @@
   import Publish from "./Publish.svelte";
   import PostContent from "./PostContent.svelte";
 
+  let pgi = pubgate_instance;
   let showPublish = false;
   const togglePublish = ev => {
     ev.preventDefault();
@@ -44,7 +45,9 @@
   let announces = "n/a";
 
   if (post.inReplyTo) {
-    inReply = ensureObject(post.inReplyTo);
+    inReply = pgi
+      ? post.inReplyTo
+      : ensureObject(post.inReplyTo);
     isReply = true;
   }
 
@@ -162,11 +165,11 @@
   {#if $session.user}
     <div class="ra">
       <button class="ra_item">
-        {#if liked}Liked{:else}Liked{/if}
+        Like{#if liked}d{/if}
       </button>
       <button class="ra_item" on:click={togglePublish}>Add comment</button>
       <button class="ra_item" on:click={doAnnounce}>
-        {#if announced}Announced{:else}Announce{/if}
+        Announce{#if announced}d{/if}
       </button>
     </div>
     {#if showPublish}
