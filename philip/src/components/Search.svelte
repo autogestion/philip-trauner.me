@@ -3,10 +3,8 @@
   export let curRoute;
 
   import { xhr, findUser, fetchOutbox } from "../utils";
-  import TimeLine from "./TimeLine.svelte";
+  import Collection from "./Collection.svelte";
   import Post from "./Post.svelte";
-  import { readable } from "svelte/store";
-  const timelineRoute = readable("/search");
 
   // search user
   let username = "";
@@ -37,8 +35,8 @@
     name = pair[0];
     domain = pair[1];
 
-    const res = await handleResult(findUser(name, domain));
 
+    const res = await handleResult(findUser(name, domain));
     if (!res.outbox) return;
     profile = res;
 
@@ -138,7 +136,7 @@ Load Post by link
   </h2>
   {profile.summary}
   {#if outbox_collection}
-    <TimeLine curRoute={timelineRoute} {session} {outbox_collection} />
+    <Collection {session} collection={outbox_collection} />
   {/if}
 {/if}
 

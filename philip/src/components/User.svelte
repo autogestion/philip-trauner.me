@@ -1,16 +1,11 @@
 <script>
-  import TimeLine from "./TimeLine.svelte";
-  import { readable } from "svelte/store";
-  const timelineRoute = readable("/search");
+  import Collection from "./Collection.svelte";
 
   export let curRoute;
   export let session;
 
   const username = $curRoute.match(/^\/@([^\/]+)$/)[1];
-  let timeline = null;
-  let followers = null;
-  let following = null;
-  let liked = null;
+  let outbox, followers, following, liked;
 
   let headers = { Accept: "application/activity+json" };
   const fetchJSON = (url, cb = d => d) =>
@@ -23,7 +18,7 @@
       .then(d => d.json())
       .then(d => {
         console.log("[User]Fetching timeline", d.outbox);
-        timeline = fetchJSON(d.outbox, d => d.first);
+        outbox = fetchJSON(d.outbox, d => d);
         followers = fetchJSON(d.followers);
         following = fetchJSON(d.following);
         liked = fetchJSON(d.liked);
@@ -53,37 +48,29 @@
 
   <p>{user.summary}</p>
 
-  {#await followers}
-    Loading followers ..
-  {:then outbox_collection}
-    {#if outbox_collection.length}
+  {#await followers then collection}
+    {#if collection.length}
       <h3>Followers</h3>
-      <TimeLine curRoute={timelineRoute} {session} {outbox_collection} />
+      <Collection {session} {collection} />
     {/if}
   {/await}
 
-  {#await following}
-    Loading following ..
-  {:then outbox_collection}
-    {#if outbox_collection.length}
+  {#await following then collection}
+    {#if collection.length}
       <h3>Following</h3>
-      <TimeLine curRoute={timelineRoute} {session} {outbox_collection} />
+      <Collection {session} {collection} />
     {/if}
   {/await}
 
-  {#await liked}
-    Loading liked posts ..
-  {:then outbox_collection}
-    {#if outbox_collection.length}
+  {#await liked then collection}
+    {#if collection.length}
       <h3>Liked</h3>
-      <TimeLine curRoute={timelineRoute} {session} {outbox_collection} />
+      <Collection {session} {collection} />
     {/if}
   {/await}
 
-  {#await timeline}
-    Loading posts ..
-  {:then outbox_collection}
+  {#await outbox then collection}
     <h3>Posts</h3>
-    <TimeLine curRoute={timelineRoute} {session} {outbox_collection} />
+    <Collection {session} {collection} />
   {/await}
 {/await}

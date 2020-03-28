@@ -4,10 +4,12 @@
 
   import { ensureObject } from "../utils";
   import Publish from "./Publish.svelte";
-  import PostContent from "./PostContent.svelte";
+  import PostContent from "./Post/Content.svelte";
+  import Collection from "./Collection.svelte";
 
   let pgi = pubgate_instance;
   let showPublish = false;
+
   const togglePublish = ev => {
     ev.preventDefault();
     showPublish = !showPublish;
@@ -40,27 +42,27 @@
   let inReply;
   let isReply = false;
 
-  let likes = "n/a";
-  let comments = "n/a";
-  let announces = "n/a";
+  const getCount = async (item, returnAll = false) => {
+    if (!item) return "n/a";
+    const data = typeof item === "string" ? await fetchItem(item) : item;
+    return returnAll ? data : data.totalItems;
+  };
+
+  const fetchItem = path => {
+    let headers = { Accept: "application/activity+json" };
+    const url = pgi ? path + "?cached=1" : path;
+    return fetch(url, { headers })
+      .then(d => d.json())
+      .then(d => d);
+  };
+
+  let likes = getCount(post.likes);
+  let comments = getCount(post.replies, true);
+  let announces = getCount(post.shares);
 
   if (post.inReplyTo) {
-    inReply = pgi
-      ? post.inReplyTo
-      : ensureObject(post.inReplyTo);
+    inReply = pgi ? post.inReplyTo : ensureObject(post.inReplyTo);
     isReply = true;
-  }
-
-  if (post.likes) {
-    likes = post.likes.totalItems;
-  }
-
-  if (post.shares) {
-    announces = post.shares.totalItems;
-  }
-
-  if (post.replies) {
-    comments = post.replies.totalItems;
   }
 
   let customType = isReply ? "Reply" : null;
@@ -140,6 +142,12 @@
     border: none;
     background: none;
   }
+
+  .comments {
+    margin-bottom: 15px;
+    padding-left: 15px;
+    border-left: 3px solid #ff0;
+  }
 </style>
 
 {#if isReply == true}
@@ -148,8 +156,6 @@
       {#await inReply then value}
         <PostContent post={value} />
       {/await}
-    {:else}
-      <PostContent post={inReply} />
     {/if}
   </div>
 {/if}
@@ -158,9 +164,17 @@
 
 <div class="reactionz">
   <div class="rs">
-    <span class="rs_left" on:click={toggleLists}>{likes} likes</span>
-    <span class="rs_right" on:click={toggleLists}>{comments} comments</span>
-    <span class="rs_right" on:click={toggleLists}>{announces} announces</span>
+    {#await likes then likes}
+      <span class="rs_left" on:click={toggleLists}>{likes} likes</span>
+    {/await}
+    {#await comments then comments}
+      <span class="rs_right" on:click={toggleLists}>
+        {comments.totalItems !== null ? comments.totalItems : comments} comments
+      </span>
+    {/await}
+    {#await announces then announces}
+      <span class="rs_right" on:click={toggleLists}>{announces} announces</span>
+    {/await}
   </div>
   {#if $session.user}
     <div class="ra">
@@ -176,4 +190,11 @@
       <Publish reply={post} {session} />
     {/if}
   {/if}
+  {#await comments then collection}
+    {#if collection.totalItems}
+      <div class="comments">
+        <Collection {session} {collection} />
+      </div>
+    {/if}
+  {/await}
 </div>

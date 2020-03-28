@@ -1049,6 +1049,15 @@ var app = (function () {
             });
     }
 
+    const fetchCollection = function(path, session = {}, inbox = false) {
+      let headers = { Accept: "application/activity+json" };
+      if (session.user && inbox)
+        headers["Authorization"] = "Bearer " + session.token;
+      return fetch(path, { headers })
+        .then(d => d.json())
+        .then(d => d);
+    };
+
     function ensureObject(value) {
         if (typeof value === "string") {
             let fpost;
@@ -1059,11 +1068,66 @@ var app = (function () {
         }
     }
 
-    const getHashTag = name => ({
-      name,
-      href: "",
-      type: "Hashtag",
-    });
+    let baseProtocol, baseDomain;
+    const m = base_url.match(/^([^:]+):\/\/([^/]+)/);
+    if (m) {
+      baseProtocol = m[1];
+      baseDomain = m[2];
+    }
+
+    const getUserId = (name, domain = baseDomain, fyn = true) => {
+      const protocol = domain === baseDomain ? baseProtocol : "https";
+      return (
+        `${protocol}://${domain}/` +
+        (fyn ? `@${name}` : `.well-known/webfinger?resource=acc:${name}@${domain}`)
+      );
+    };
+
+    const findUser = async (name, domain) => {
+      const useProxy = pubgate_instance ? true : false;
+      const fynRes = await fetchUser(getUserId(name, domain), useProxy);
+      console.log("fyn", fynRes);
+      if (fynRes && !fynRes.error) return fynRes;
+
+      const wfRes = await fetchUser(getUserId(name, domain, false), useProxy);
+      console.log("wf", wfRes);
+      if (!wfRes || wfRes.error) return wfRes;
+      const id = wfRes.aliases[1] || wfRes.links[0].href;
+      return await fetchUser(id, useProxy);
+    };
+
+    const fetchUser = async (url, useProxy = true) => {
+      if (useProxy) {
+        //TODO require auth, merge with xhr?
+        const req = { method: "POST", body: JSON.stringify({ url }) };
+        return await fetch(base_url + "/proxy", req).then(d => d.json());
+      }
+      try {
+        // might not return json
+        const headers = { Accept: "application/activity+json" };
+        return await fetch(url, headers).then(d => d.json());
+      } catch (error) {
+        return { error };
+      }
+    };
+
+    const fetchOutbox = async url => {
+      const req = { method: "POST", body: JSON.stringify({ url }) };
+      const res = await fetch(base_url + "/proxy", req).then(d => d.json());
+      if (res.error) return res;
+      return typeof res.first === "string"
+        ? await fetchTimeline(res.first)
+        : res.first;
+    };
+
+    const fetchTimeline = async url => {
+      const req = { method: "POST", body: JSON.stringify({ url }) };
+      return await fetch(base_url + "/proxy", request).then(d => d.json());
+    };
+
+    const getHashTag = name => ({ name, href: "", type: "Hashtag" });
+
+    const getMention = (name, href) => ({ name, href, type: "Mention" });
 
     const getCreateObject = (content, tag) => ({
       type: "Create",
@@ -1081,7 +1145,7 @@ var app = (function () {
     const file$3 = "src/components/Publish.svelte";
 
     function create_fragment$3(ctx) {
-    	var form, fieldset, textarea, t0, button, t1, button_disabled_value, dispose;
+    	var form, fieldset, textarea, t0, button, t1, button_disabled_value, t2, p, t3, dispose;
 
     	return {
     		c: function create() {
@@ -1091,15 +1155,20 @@ var app = (function () {
     			t0 = space();
     			button = element("button");
     			t1 = text("Publish");
+    			t2 = space();
+    			p = element("p");
+    			t3 = text(ctx.error);
     			attr(textarea, "class", "form-control svelte-1fvj4fs");
     			attr(textarea, "placeholder", "Write your text here");
-    			add_location(textarea, file$3, 64, 4, 1444);
+    			add_location(textarea, file$3, 82, 4, 2396);
     			attr(fieldset, "class", "form-group");
-    			add_location(fieldset, file$3, 63, 2, 1410);
+    			add_location(fieldset, file$3, 81, 2, 2362);
     			attr(button, "class", "btn btn-sm pull-xs-right btn-info");
     			button.disabled = button_disabled_value = !ctx.content || ctx.inProgress;
-    			add_location(button, file$3, 70, 2, 1569);
-    			add_location(form, file$3, 61, 0, 1380);
+    			add_location(button, file$3, 88, 2, 2521);
+    			add_location(form, file$3, 79, 0, 2332);
+    			attr(p, "class", "text-danger");
+    			add_location(p, file$3, 96, 0, 2648);
 
     			dispose = [
     				listen(textarea, "input", ctx.textarea_input_handler),
@@ -1121,6 +1190,9 @@ var app = (function () {
     			append(form, t0);
     			append(form, button);
     			append(button, t1);
+    			insert(target, t2, anchor);
+    			insert(target, p, anchor);
+    			append(p, t3);
     		},
 
     		p: function update(changed, ctx) {
@@ -1128,6 +1200,10 @@ var app = (function () {
 
     			if ((changed.content || changed.inProgress) && button_disabled_value !== (button_disabled_value = !ctx.content || ctx.inProgress)) {
     				button.disabled = button_disabled_value;
+    			}
+
+    			if (changed.error) {
+    				set_data(t3, ctx.error);
     			}
     		},
 
@@ -1137,6 +1213,8 @@ var app = (function () {
     		d: function destroy(detaching) {
     			if (detaching) {
     				detach(form);
+    				detach(t2);
+    				detach(p);
     			}
 
     			run_all(dispose);
@@ -1146,54 +1224,74 @@ var app = (function () {
 
     const hashTagMatcher = /(^|\W)(#[^#\s]+)/gi;
 
+    const mentionMatcher = /(^|\W)@([^@\s]+)(@([^@\s]+))?/gi;
+
     function instance$2($$self, $$props, $$invalidate) {
     	let $session;
 
-    	let { reply = null, session, curRoute } = $$props; validate_store(session, 'session'); component_subscribe($$self, session, $$value => { $session = $$value; $$invalidate('$session', $session); });
+    	
+
+      let { reply = null, session, curRoute } = $$props; validate_store(session, 'session'); component_subscribe($$self, session, $$value => { $session = $$value; $$invalidate('$session', $session); });
 
       let inProgress = false;
       let content = "";
+      let error = "";
 
       const wrapHashTagsWithLink = text =>
-        text.match(hashTagMatcher)
-          ? text.replace(hashTagMatcher, '$1<a href="" rel="tag">$2</a>')
-          : text;
+        text.replace(hashTagMatcher, '$1<a href="" rel="tag">$2</a>');
 
       const getAllHashTags = text => text.match(hashTagMatcher) || [];
+      const getAllMentions = text => [...text.matchAll(mentionMatcher)] || [];
 
       const wrapLinksWithTags = text =>
         text.replace(/(https?:\/\/([^\s]+))/gi, '<a href="$1">$2</a>');
 
-      const publish = async ev => {
+      const publish = ev => {
         ev.preventDefault();
-
         $$invalidate('inProgress', inProgress = true);
-        let tags = getAllHashTags(content)
+
+        const tags = getAllHashTags(content)
           .map(v => v.trim())
           .map(getHashTag);
+        $$invalidate('content', content = wrapHashTagsWithLink(wrapLinksWithTags(content)));
 
-        const data = wrapHashTagsWithLink(wrapLinksWithTags(content));
-
-        let ap_object = getCreateObject(data, tags);
+        // parse and replace mentions
+        const mentions = getAllMentions(content).map(m => {
+          const orig = m[0];
+          const name = m[2];
+          const domain = m[4];
+          const id = getUserId(name, domain);
+          const wrapped = `${m[1]}<span class='h-card'><a href="${id}"' class='u-url mention'>@<span>${name}</span></a></span>`;
+          $$invalidate('content', content = content.replace(orig, wrapped));
+          return getMention(name, id);
+        });
+        let ap_object = getCreateObject(content, tags.concat(mentions));
+        ap_object.cc = mentions.map(m => m.href);
 
         if (reply) {
           ap_object.object.inReplyTo = reply.id;
-          ap_object.cc = [reply.attributedTo];
+          ap_object.cc = ap_object.cc.concat(reply.attributedTo);
         }
+        sendPost(JSON.stringify(ap_object));
+      };
 
+      const sendPost = async body => {
         try {
-          const response = await fetch($session.user.outbox, {
-            method: "POST",
-            body: JSON.stringify(ap_object),
-            headers: { Authorization: "Bearer " + $session.token },
-          });
-          const data = await response.json();
+          const headers = { Authorization: "Bearer " + $session.token };
+          const req = { method: "POST", body, headers };
+          console.log("sending", req);
+          const res = await fetch($session.user.outbox, req).then(d => d.json());
+          console.log("response", res);
+          if (res.error) $$invalidate('error', error = res.error);
+          else if (res.Created !== "success")
+            $$invalidate('error', error = "Failed to create post: " + JSON.stringify(res));
         } catch (e) {
-          console.log(e);
+          $$invalidate('error', error = e);
         }
 
         $$invalidate('inProgress', inProgress = false);
         $$invalidate('content', content = "");
+        // TODO change route to show post?
       };
 
     	const writable_props = ['reply', 'session', 'curRoute'];
@@ -1218,6 +1316,7 @@ var app = (function () {
     		curRoute,
     		inProgress,
     		content,
+    		error,
     		publish,
     		textarea_input_handler
     	};
@@ -1263,332 +1362,132 @@ var app = (function () {
     	}
     }
 
-    /* src/components/PostContent.svelte generated by Svelte v3.7.1 */
+    /* src/components/Post/Header.svelte generated by Svelte v3.7.1 */
 
-    const file$4 = "src/components/PostContent.svelte";
+    const file$4 = "src/components/Post/Header.svelte";
 
-    function get_each_context(ctx, list, i) {
-    	const child_ctx = Object.create(ctx);
-    	child_ctx.attachment = list[i];
-    	return child_ctx;
-    }
-
-    function get_each_context_1(ctx, list, i) {
-    	const child_ctx = Object.create(ctx);
-    	child_ctx.tag = list[i];
-    	return child_ctx;
-    }
-
-    // (37:0) {:else}
-    function create_else_block_1(ctx) {
-    	var a, t;
-
-    	return {
-    		c: function create() {
-    			a = element("a");
-    			t = text(ctx.post);
-    			attr(a, "href", ctx.post);
-    			add_location(a, file$4, 37, 2, 886);
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, a, anchor);
-    			append(a, t);
-    		},
-
-    		p: function update(changed, ctx) {
-    			if (changed.post) {
-    				set_data(t, ctx.post);
-    				attr(a, "href", ctx.post);
-    			}
-    		},
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(a);
-    			}
-    		}
-    	};
-    }
-
-    // (6:0) {#if post.id}
-    function create_if_block$1(ctx) {
-    	var div, a0, a0_href_value, t0, a1, t1_value = ctx.post.attributedTo, t1, a1_href_value, t2, span0, t4, span1, t5_value = ctx.post.published.replace('T', ' ').replace('Z', ' '), t5, t6, t7, p, raw_value = ctx.post.content, t8, if_block2_anchor;
-
-    	function select_block_type_1(ctx) {
-    		if (ctx.customType) return create_if_block_5;
-    		return create_else_block;
-    	}
-
-    	var current_block_type = select_block_type_1(ctx);
-    	var if_block0 = current_block_type(ctx);
-
-    	var if_block1 = (ctx.post.tag) && create_if_block_3(ctx);
-
-    	var if_block2 = (ctx.post.attachment) && create_if_block_1$1(ctx);
+    function create_fragment$4(ctx) {
+    	var div, a0, t0_value = ctx.post.type, t0, a0_href_value, t1, a1, t2, t3, span0, t5, span1, t6_value = ctx.post.published.replace('T', ' ').replace('Z', ' '), t6;
 
     	return {
     		c: function create() {
     			div = element("div");
     			a0 = element("a");
-    			if_block0.c();
-    			t0 = text("\n    by user\n    ");
+    			t0 = text(t0_value);
+    			t1 = text("\n  by\n  ");
     			a1 = element("a");
-    			t1 = text(t1_value);
-    			t2 = space();
+    			t2 = text(ctx.userName);
+    			t3 = space();
     			span0 = element("span");
     			span0.textContent = "·";
-    			t4 = space();
+    			t5 = space();
     			span1 = element("span");
-    			t5 = text(t5_value);
-    			t6 = space();
-    			if (if_block1) if_block1.c();
-    			t7 = space();
-    			p = element("p");
-    			t8 = space();
-    			if (if_block2) if_block2.c();
-    			if_block2_anchor = empty();
+    			t6 = text(t6_value);
     			attr(a0, "href", a0_href_value = ctx.post.id);
-    			add_location(a0, file$4, 8, 4, 115);
-    			attr(a1, "href", a1_href_value = ctx.post.attributedTo);
-    			add_location(a1, file$4, 12, 4, 217);
+    			add_location(a0, file$4, 8, 2, 174);
+    			attr(a1, "href", ctx.userId);
+    			add_location(a1, file$4, 10, 2, 215);
     			attr(span0, "class", "metadata-seperator");
-    			add_location(span0, file$4, 13, 4, 273);
-    			add_location(span1, file$4, 14, 4, 319);
+    			add_location(span0, file$4, 11, 2, 249);
+    			add_location(span1, file$4, 12, 2, 293);
     			attr(div, "class", "metadata");
-    			add_location(div, file$4, 6, 2, 87);
-    			add_location(p, file$4, 26, 2, 606);
+    			add_location(div, file$4, 7, 0, 149);
+    		},
+
+    		l: function claim(nodes) {
+    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
 
     		m: function mount(target, anchor) {
     			insert(target, div, anchor);
     			append(div, a0);
-    			if_block0.m(a0, null);
-    			append(div, t0);
+    			append(a0, t0);
+    			append(div, t1);
     			append(div, a1);
-    			append(a1, t1);
-    			append(div, t2);
+    			append(a1, t2);
+    			append(div, t3);
     			append(div, span0);
-    			append(div, t4);
+    			append(div, t5);
     			append(div, span1);
-    			append(span1, t5);
-    			insert(target, t6, anchor);
-    			if (if_block1) if_block1.m(target, anchor);
-    			insert(target, t7, anchor);
-    			insert(target, p, anchor);
-    			p.innerHTML = raw_value;
-    			insert(target, t8, anchor);
-    			if (if_block2) if_block2.m(target, anchor);
-    			insert(target, if_block2_anchor, anchor);
+    			append(span1, t6);
     		},
 
     		p: function update(changed, ctx) {
-    			if (current_block_type === (current_block_type = select_block_type_1(ctx)) && if_block0) {
-    				if_block0.p(changed, ctx);
-    			} else {
-    				if_block0.d(1);
-    				if_block0 = current_block_type(ctx);
-    				if (if_block0) {
-    					if_block0.c();
-    					if_block0.m(a0, null);
-    				}
+    			if ((changed.post) && t0_value !== (t0_value = ctx.post.type)) {
+    				set_data(t0, t0_value);
     			}
 
     			if ((changed.post) && a0_href_value !== (a0_href_value = ctx.post.id)) {
     				attr(a0, "href", a0_href_value);
     			}
 
-    			if ((changed.post) && t1_value !== (t1_value = ctx.post.attributedTo)) {
-    				set_data(t1, t1_value);
-    			}
-
-    			if ((changed.post) && a1_href_value !== (a1_href_value = ctx.post.attributedTo)) {
-    				attr(a1, "href", a1_href_value);
-    			}
-
-    			if ((changed.post) && t5_value !== (t5_value = ctx.post.published.replace('T', ' ').replace('Z', ' '))) {
-    				set_data(t5, t5_value);
-    			}
-
-    			if (ctx.post.tag) {
-    				if (if_block1) {
-    					if_block1.p(changed, ctx);
-    				} else {
-    					if_block1 = create_if_block_3(ctx);
-    					if_block1.c();
-    					if_block1.m(t7.parentNode, t7);
-    				}
-    			} else if (if_block1) {
-    				if_block1.d(1);
-    				if_block1 = null;
-    			}
-
-    			if ((changed.post) && raw_value !== (raw_value = ctx.post.content)) {
-    				p.innerHTML = raw_value;
-    			}
-
-    			if (ctx.post.attachment) {
-    				if (if_block2) {
-    					if_block2.p(changed, ctx);
-    				} else {
-    					if_block2 = create_if_block_1$1(ctx);
-    					if_block2.c();
-    					if_block2.m(if_block2_anchor.parentNode, if_block2_anchor);
-    				}
-    			} else if (if_block2) {
-    				if_block2.d(1);
-    				if_block2 = null;
+    			if ((changed.post) && t6_value !== (t6_value = ctx.post.published.replace('T', ' ').replace('Z', ' '))) {
+    				set_data(t6, t6_value);
     			}
     		},
+
+    		i: noop,
+    		o: noop,
 
     		d: function destroy(detaching) {
     			if (detaching) {
     				detach(div);
     			}
-
-    			if_block0.d();
-
-    			if (detaching) {
-    				detach(t6);
-    			}
-
-    			if (if_block1) if_block1.d(detaching);
-
-    			if (detaching) {
-    				detach(t7);
-    				detach(p);
-    				detach(t8);
-    			}
-
-    			if (if_block2) if_block2.d(detaching);
-
-    			if (detaching) {
-    				detach(if_block2_anchor);
-    			}
     		}
     	};
     }
 
-    // (10:34) {:else}
-    function create_else_block(ctx) {
-    	var t_value = ctx.post.type, t;
+    function instance$3($$self, $$props, $$invalidate) {
+    	let { post } = $$props;
 
-    	return {
-    		c: function create() {
-    			t = text(t_value);
-    		},
+      const userId = post.actor || post.attributedTo;
+      const userName = userId.replace(/^.+\@([^/@]+)$/, "$1");
 
-    		m: function mount(target, anchor) {
-    			insert(target, t, anchor);
-    		},
+    	const writable_props = ['post'];
+    	Object.keys($$props).forEach(key => {
+    		if (!writable_props.includes(key) && !key.startsWith('$$')) console.warn(`<Header> was created with unknown prop '${key}'`);
+    	});
 
-    		p: function update(changed, ctx) {
-    			if ((changed.post) && t_value !== (t_value = ctx.post.type)) {
-    				set_data(t, t_value);
-    			}
-    		},
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(t);
-    			}
-    		}
+    	$$self.$set = $$props => {
+    		if ('post' in $$props) $$invalidate('post', post = $$props.post);
     	};
+
+    	return { post, userId, userName };
     }
 
-    // (10:6) {#if customType}
-    function create_if_block_5(ctx) {
-    	var t;
+    class Header extends SvelteComponentDev {
+    	constructor(options) {
+    		super(options);
+    		init(this, options, instance$3, create_fragment$4, safe_not_equal, ["post"]);
 
-    	return {
-    		c: function create() {
-    			t = text(ctx.customType);
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, t, anchor);
-    		},
-
-    		p: function update(changed, ctx) {
-    			if (changed.customType) {
-    				set_data(t, ctx.customType);
-    			}
-    		},
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(t);
-    			}
+    		const { ctx } = this.$$;
+    		const props = options.props || {};
+    		if (ctx.post === undefined && !('post' in props)) {
+    			console.warn("<Header> was created without expected prop 'post'");
     		}
-    	};
-    }
-
-    // (17:2) {#if post.tag}
-    function create_if_block_3(ctx) {
-    	var div;
-
-    	var each_value_1 = ctx.post.tag;
-
-    	var each_blocks = [];
-
-    	for (var i = 0; i < each_value_1.length; i += 1) {
-    		each_blocks[i] = create_each_block_1(get_each_context_1(ctx, each_value_1, i));
     	}
 
-    	return {
-    		c: function create() {
-    			div = element("div");
+    	get post() {
+    		throw new Error("<Header>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
 
-    			for (var i = 0; i < each_blocks.length; i += 1) {
-    				each_blocks[i].c();
-    			}
-    			attr(div, "class", "tags");
-    			add_location(div, file$4, 17, 4, 415);
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, div, anchor);
-
-    			for (var i = 0; i < each_blocks.length; i += 1) {
-    				each_blocks[i].m(div, null);
-    			}
-    		},
-
-    		p: function update(changed, ctx) {
-    			if (changed.post) {
-    				each_value_1 = ctx.post.tag;
-
-    				for (var i = 0; i < each_value_1.length; i += 1) {
-    					const child_ctx = get_each_context_1(ctx, each_value_1, i);
-
-    					if (each_blocks[i]) {
-    						each_blocks[i].p(changed, child_ctx);
-    					} else {
-    						each_blocks[i] = create_each_block_1(child_ctx);
-    						each_blocks[i].c();
-    						each_blocks[i].m(div, null);
-    					}
-    				}
-
-    				for (; i < each_blocks.length; i += 1) {
-    					each_blocks[i].d(1);
-    				}
-    				each_blocks.length = each_value_1.length;
-    			}
-    		},
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(div);
-    			}
-
-    			destroy_each(each_blocks, detaching);
-    		}
-    	};
+    	set post(value) {
+    		throw new Error("<Header>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
     }
 
-    // (20:8) {#if tag.type == 'Hashtag'}
-    function create_if_block_4(ctx) {
+    /* src/components/Post/Tags.svelte generated by Svelte v3.7.1 */
+
+    const file$5 = "src/components/Post/Tags.svelte";
+
+    function get_each_context(ctx, list, i) {
+    	const child_ctx = Object.create(ctx);
+    	child_ctx.tag = list[i];
+    	return child_ctx;
+    }
+
+    // (7:4) {#if tag.type == 'Hashtag'}
+    function create_if_block$1(ctx) {
     	var a, t_value = ctx.tag.name, t, a_href_value;
 
     	return {
@@ -1597,7 +1496,7 @@ var app = (function () {
     			t = text(t_value);
     			attr(a, "class", "tag");
     			attr(a, "href", a_href_value = ctx.tag.href);
-    			add_location(a, file$4, 20, 10, 510);
+    			add_location(a, file$5, 7, 6, 118);
     		},
 
     		m: function mount(target, anchor) {
@@ -1606,11 +1505,11 @@ var app = (function () {
     		},
 
     		p: function update(changed, ctx) {
-    			if ((changed.post) && t_value !== (t_value = ctx.tag.name)) {
+    			if ((changed.tags) && t_value !== (t_value = ctx.tag.name)) {
     				set_data(t, t_value);
     			}
 
-    			if ((changed.post) && a_href_value !== (a_href_value = ctx.tag.href)) {
+    			if ((changed.tags) && a_href_value !== (a_href_value = ctx.tag.href)) {
     				attr(a, "href", a_href_value);
     			}
     		},
@@ -1623,11 +1522,11 @@ var app = (function () {
     	};
     }
 
-    // (19:6) {#each post.tag as tag}
-    function create_each_block_1(ctx) {
+    // (6:2) {#each tags as tag}
+    function create_each_block(ctx) {
     	var if_block_anchor;
 
-    	var if_block = (ctx.tag.type == 'Hashtag') && create_if_block_4(ctx);
+    	var if_block = (ctx.tag.type == 'Hashtag') && create_if_block$1(ctx);
 
     	return {
     		c: function create() {
@@ -1645,7 +1544,7 @@ var app = (function () {
     				if (if_block) {
     					if_block.p(changed, ctx);
     				} else {
-    					if_block = create_if_block_4(ctx);
+    					if_block = create_if_block$1(ctx);
     					if_block.c();
     					if_block.m(if_block_anchor.parentNode, if_block_anchor);
     				}
@@ -1665,7 +1564,319 @@ var app = (function () {
     	};
     }
 
-    // (30:2) {#if post.attachment}
+    function create_fragment$5(ctx) {
+    	var div;
+
+    	var each_value = ctx.tags;
+
+    	var each_blocks = [];
+
+    	for (var i = 0; i < each_value.length; i += 1) {
+    		each_blocks[i] = create_each_block(get_each_context(ctx, each_value, i));
+    	}
+
+    	return {
+    		c: function create() {
+    			div = element("div");
+
+    			for (var i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].c();
+    			}
+    			attr(div, "class", "tags");
+    			add_location(div, file$5, 4, 0, 39);
+    		},
+
+    		l: function claim(nodes) {
+    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
+    		},
+
+    		m: function mount(target, anchor) {
+    			insert(target, div, anchor);
+
+    			for (var i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].m(div, null);
+    			}
+    		},
+
+    		p: function update(changed, ctx) {
+    			if (changed.tags) {
+    				each_value = ctx.tags;
+
+    				for (var i = 0; i < each_value.length; i += 1) {
+    					const child_ctx = get_each_context(ctx, each_value, i);
+
+    					if (each_blocks[i]) {
+    						each_blocks[i].p(changed, child_ctx);
+    					} else {
+    						each_blocks[i] = create_each_block(child_ctx);
+    						each_blocks[i].c();
+    						each_blocks[i].m(div, null);
+    					}
+    				}
+
+    				for (; i < each_blocks.length; i += 1) {
+    					each_blocks[i].d(1);
+    				}
+    				each_blocks.length = each_value.length;
+    			}
+    		},
+
+    		i: noop,
+    		o: noop,
+
+    		d: function destroy(detaching) {
+    			if (detaching) {
+    				detach(div);
+    			}
+
+    			destroy_each(each_blocks, detaching);
+    		}
+    	};
+    }
+
+    function instance$4($$self, $$props, $$invalidate) {
+    	let { tags } = $$props;
+
+    	const writable_props = ['tags'];
+    	Object.keys($$props).forEach(key => {
+    		if (!writable_props.includes(key) && !key.startsWith('$$')) console.warn(`<Tags> was created with unknown prop '${key}'`);
+    	});
+
+    	$$self.$set = $$props => {
+    		if ('tags' in $$props) $$invalidate('tags', tags = $$props.tags);
+    	};
+
+    	return { tags };
+    }
+
+    class Tags extends SvelteComponentDev {
+    	constructor(options) {
+    		super(options);
+    		init(this, options, instance$4, create_fragment$5, safe_not_equal, ["tags"]);
+
+    		const { ctx } = this.$$;
+    		const props = options.props || {};
+    		if (ctx.tags === undefined && !('tags' in props)) {
+    			console.warn("<Tags> was created without expected prop 'tags'");
+    		}
+    	}
+
+    	get tags() {
+    		throw new Error("<Tags>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+
+    	set tags(value) {
+    		throw new Error("<Tags>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+    }
+
+    /* src/components/Post/Content.svelte generated by Svelte v3.7.1 */
+
+    const file$6 = "src/components/Post/Content.svelte";
+
+    function get_each_context$1(ctx, list, i) {
+    	const child_ctx = Object.create(ctx);
+    	child_ctx.attachment = list[i];
+    	return child_ctx;
+    }
+
+    // (32:0) {:else}
+    function create_else_block(ctx) {
+    	var a, t;
+
+    	return {
+    		c: function create() {
+    			a = element("a");
+    			t = text("Original post");
+    			attr(a, "class", "original svelte-66q9dc");
+    			attr(a, "href", ctx.post);
+    			add_location(a, file$6, 32, 2, 613);
+    		},
+
+    		m: function mount(target, anchor) {
+    			insert(target, a, anchor);
+    			append(a, t);
+    		},
+
+    		p: function update(changed, ctx) {
+    			if (changed.post) {
+    				attr(a, "href", ctx.post);
+    			}
+    		},
+
+    		i: noop,
+    		o: noop,
+
+    		d: function destroy(detaching) {
+    			if (detaching) {
+    				detach(a);
+    			}
+    		}
+    	};
+    }
+
+    // (16:0) {#if post.id}
+    function create_if_block$2(ctx) {
+    	var t0, t1, p, raw_value = ctx.post.content, t2, if_block1_anchor, current;
+
+    	var header = new Header({
+    		props: { post: ctx.post },
+    		$$inline: true
+    	});
+
+    	var if_block0 = (ctx.post.tag) && create_if_block_3(ctx);
+
+    	var if_block1 = (ctx.post.attachment) && create_if_block_1$1(ctx);
+
+    	return {
+    		c: function create() {
+    			header.$$.fragment.c();
+    			t0 = space();
+    			if (if_block0) if_block0.c();
+    			t1 = space();
+    			p = element("p");
+    			t2 = space();
+    			if (if_block1) if_block1.c();
+    			if_block1_anchor = empty();
+    			add_location(p, file$6, 21, 2, 333);
+    		},
+
+    		m: function mount(target, anchor) {
+    			mount_component(header, target, anchor);
+    			insert(target, t0, anchor);
+    			if (if_block0) if_block0.m(target, anchor);
+    			insert(target, t1, anchor);
+    			insert(target, p, anchor);
+    			p.innerHTML = raw_value;
+    			insert(target, t2, anchor);
+    			if (if_block1) if_block1.m(target, anchor);
+    			insert(target, if_block1_anchor, anchor);
+    			current = true;
+    		},
+
+    		p: function update(changed, ctx) {
+    			var header_changes = {};
+    			if (changed.post) header_changes.post = ctx.post;
+    			header.$set(header_changes);
+
+    			if (ctx.post.tag) {
+    				if (if_block0) {
+    					if_block0.p(changed, ctx);
+    					transition_in(if_block0, 1);
+    				} else {
+    					if_block0 = create_if_block_3(ctx);
+    					if_block0.c();
+    					transition_in(if_block0, 1);
+    					if_block0.m(t1.parentNode, t1);
+    				}
+    			} else if (if_block0) {
+    				group_outros();
+    				transition_out(if_block0, 1, 1, () => {
+    					if_block0 = null;
+    				});
+    				check_outros();
+    			}
+
+    			if ((!current || changed.post) && raw_value !== (raw_value = ctx.post.content)) {
+    				p.innerHTML = raw_value;
+    			}
+
+    			if (ctx.post.attachment) {
+    				if (if_block1) {
+    					if_block1.p(changed, ctx);
+    				} else {
+    					if_block1 = create_if_block_1$1(ctx);
+    					if_block1.c();
+    					if_block1.m(if_block1_anchor.parentNode, if_block1_anchor);
+    				}
+    			} else if (if_block1) {
+    				if_block1.d(1);
+    				if_block1 = null;
+    			}
+    		},
+
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(header.$$.fragment, local);
+
+    			transition_in(if_block0);
+    			current = true;
+    		},
+
+    		o: function outro(local) {
+    			transition_out(header.$$.fragment, local);
+    			transition_out(if_block0);
+    			current = false;
+    		},
+
+    		d: function destroy(detaching) {
+    			destroy_component(header, detaching);
+
+    			if (detaching) {
+    				detach(t0);
+    			}
+
+    			if (if_block0) if_block0.d(detaching);
+
+    			if (detaching) {
+    				detach(t1);
+    				detach(p);
+    				detach(t2);
+    			}
+
+    			if (if_block1) if_block1.d(detaching);
+
+    			if (detaching) {
+    				detach(if_block1_anchor);
+    			}
+    		}
+    	};
+    }
+
+    // (18:2) {#if post.tag}
+    function create_if_block_3(ctx) {
+    	var current;
+
+    	var tags = new Tags({
+    		props: { tags: ctx.post.tag },
+    		$$inline: true
+    	});
+
+    	return {
+    		c: function create() {
+    			tags.$$.fragment.c();
+    		},
+
+    		m: function mount(target, anchor) {
+    			mount_component(tags, target, anchor);
+    			current = true;
+    		},
+
+    		p: function update(changed, ctx) {
+    			var tags_changes = {};
+    			if (changed.post) tags_changes.tags = ctx.post.tag;
+    			tags.$set(tags_changes);
+    		},
+
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(tags.$$.fragment, local);
+
+    			current = true;
+    		},
+
+    		o: function outro(local) {
+    			transition_out(tags.$$.fragment, local);
+    			current = false;
+    		},
+
+    		d: function destroy(detaching) {
+    			destroy_component(tags, detaching);
+    		}
+    	};
+    }
+
+    // (25:2) {#if post.attachment}
     function create_if_block_1$1(ctx) {
     	var each_1_anchor;
 
@@ -1674,7 +1885,7 @@ var app = (function () {
     	var each_blocks = [];
 
     	for (var i = 0; i < each_value.length; i += 1) {
-    		each_blocks[i] = create_each_block(get_each_context(ctx, each_value, i));
+    		each_blocks[i] = create_each_block$1(get_each_context$1(ctx, each_value, i));
     	}
 
     	return {
@@ -1699,12 +1910,12 @@ var app = (function () {
     				each_value = ctx.post.attachment;
 
     				for (var i = 0; i < each_value.length; i += 1) {
-    					const child_ctx = get_each_context(ctx, each_value, i);
+    					const child_ctx = get_each_context$1(ctx, each_value, i);
 
     					if (each_blocks[i]) {
     						each_blocks[i].p(changed, child_ctx);
     					} else {
-    						each_blocks[i] = create_each_block(child_ctx);
+    						each_blocks[i] = create_each_block$1(child_ctx);
     						each_blocks[i].c();
     						each_blocks[i].m(each_1_anchor.parentNode, each_1_anchor);
     					}
@@ -1727,7 +1938,7 @@ var app = (function () {
     	};
     }
 
-    // (32:6) {#if attachment.type === 'Document' && attachment.mediaType.startsWith('image')}
+    // (27:6) {#if attachment.type === 'Document' && attachment.mediaType.startsWith('image')}
     function create_if_block_2(ctx) {
     	var img, img_src_value;
 
@@ -1736,7 +1947,7 @@ var app = (function () {
     			img = element("img");
     			attr(img, "src", img_src_value = ctx.attachment.url);
     			attr(img, "alt", "image");
-    			add_location(img, file$4, 32, 8, 803);
+    			add_location(img, file$6, 27, 8, 530);
     		},
 
     		m: function mount(target, anchor) {
@@ -1757,8 +1968,8 @@ var app = (function () {
     	};
     }
 
-    // (31:4) {#each post.attachment as attachment}
-    function create_each_block(ctx) {
+    // (26:4) {#each post.attachment as attachment}
+    function create_each_block$1(ctx) {
     	var if_block_anchor;
 
     	var if_block = (ctx.attachment.type === 'Document' && ctx.attachment.mediaType.startsWith('image')) && create_if_block_2(ctx);
@@ -1799,16 +2010,23 @@ var app = (function () {
     	};
     }
 
-    function create_fragment$4(ctx) {
-    	var if_block_anchor;
+    function create_fragment$6(ctx) {
+    	var current_block_type_index, if_block, if_block_anchor, current;
+
+    	var if_block_creators = [
+    		create_if_block$2,
+    		create_else_block
+    	];
+
+    	var if_blocks = [];
 
     	function select_block_type(ctx) {
-    		if (ctx.post.id) return create_if_block$1;
-    		return create_else_block_1;
+    		if (ctx.post.id) return 0;
+    		return 1;
     	}
 
-    	var current_block_type = select_block_type(ctx);
-    	var if_block = current_block_type(ctx);
+    	current_block_type_index = select_block_type(ctx);
+    	if_block = if_blocks[current_block_type_index] = if_block_creators[current_block_type_index](ctx);
 
     	return {
     		c: function create() {
@@ -1821,115 +2039,8 @@ var app = (function () {
     		},
 
     		m: function mount(target, anchor) {
-    			if_block.m(target, anchor);
+    			if_blocks[current_block_type_index].m(target, anchor);
     			insert(target, if_block_anchor, anchor);
-    		},
-
-    		p: function update(changed, ctx) {
-    			if (current_block_type === (current_block_type = select_block_type(ctx)) && if_block) {
-    				if_block.p(changed, ctx);
-    			} else {
-    				if_block.d(1);
-    				if_block = current_block_type(ctx);
-    				if (if_block) {
-    					if_block.c();
-    					if_block.m(if_block_anchor.parentNode, if_block_anchor);
-    				}
-    			}
-    		},
-
-    		i: noop,
-    		o: noop,
-
-    		d: function destroy(detaching) {
-    			if_block.d(detaching);
-
-    			if (detaching) {
-    				detach(if_block_anchor);
-    			}
-    		}
-    	};
-    }
-
-    function instance$3($$self, $$props, $$invalidate) {
-    	let { post, customType = null } = $$props;
-
-    	const writable_props = ['post', 'customType'];
-    	Object.keys($$props).forEach(key => {
-    		if (!writable_props.includes(key) && !key.startsWith('$$')) console.warn(`<PostContent> was created with unknown prop '${key}'`);
-    	});
-
-    	$$self.$set = $$props => {
-    		if ('post' in $$props) $$invalidate('post', post = $$props.post);
-    		if ('customType' in $$props) $$invalidate('customType', customType = $$props.customType);
-    	};
-
-    	return { post, customType };
-    }
-
-    class PostContent extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-    		init(this, options, instance$3, create_fragment$4, safe_not_equal, ["post", "customType"]);
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-    		if (ctx.post === undefined && !('post' in props)) {
-    			console.warn("<PostContent> was created without expected prop 'post'");
-    		}
-    	}
-
-    	get post() {
-    		throw new Error("<PostContent>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set post(value) {
-    		throw new Error("<PostContent>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get customType() {
-    		throw new Error("<PostContent>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set customType(value) {
-    		throw new Error("<PostContent>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    /* src/components/Post.svelte generated by Svelte v3.7.1 */
-
-    const file$5 = "src/components/Post.svelte";
-
-    // (145:0) {#if isReply == true}
-    function create_if_block_4$1(ctx) {
-    	var div, current_block_type_index, if_block, current;
-
-    	var if_block_creators = [
-    		create_if_block_5$1,
-    		create_else_block$1
-    	];
-
-    	var if_blocks = [];
-
-    	function select_block_type(ctx) {
-    		if (typeof ctx.inReply === 'object' && typeof ctx.inReply.id != 'string') return 0;
-    		return 1;
-    	}
-
-    	current_block_type_index = select_block_type(ctx);
-    	if_block = if_blocks[current_block_type_index] = if_block_creators[current_block_type_index](ctx);
-
-    	return {
-    		c: function create() {
-    			div = element("div");
-    			if_block.c();
-    			attr(div, "class", "reaction svelte-ni4kye");
-    			add_location(div, file$5, 145, 2, 2746);
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, div, anchor);
-    			if_blocks[current_block_type_index].m(div, null);
     			current = true;
     		},
 
@@ -1951,7 +2062,123 @@ var app = (function () {
     					if_block.c();
     				}
     				transition_in(if_block, 1);
-    				if_block.m(div, null);
+    				if_block.m(if_block_anchor.parentNode, if_block_anchor);
+    			}
+    		},
+
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(if_block);
+    			current = true;
+    		},
+
+    		o: function outro(local) {
+    			transition_out(if_block);
+    			current = false;
+    		},
+
+    		d: function destroy(detaching) {
+    			if_blocks[current_block_type_index].d(detaching);
+
+    			if (detaching) {
+    				detach(if_block_anchor);
+    			}
+    		}
+    	};
+    }
+
+    function instance$5($$self, $$props, $$invalidate) {
+    	
+
+      let { post, customType } = $$props;
+      if (customType) { post.type = customType; $$invalidate('post', post); }
+
+    	const writable_props = ['post', 'customType'];
+    	Object.keys($$props).forEach(key => {
+    		if (!writable_props.includes(key) && !key.startsWith('$$')) console.warn(`<Content> was created with unknown prop '${key}'`);
+    	});
+
+    	$$self.$set = $$props => {
+    		if ('post' in $$props) $$invalidate('post', post = $$props.post);
+    		if ('customType' in $$props) $$invalidate('customType', customType = $$props.customType);
+    	};
+
+    	return { post, customType };
+    }
+
+    class Content extends SvelteComponentDev {
+    	constructor(options) {
+    		super(options);
+    		init(this, options, instance$5, create_fragment$6, safe_not_equal, ["post", "customType"]);
+
+    		const { ctx } = this.$$;
+    		const props = options.props || {};
+    		if (ctx.post === undefined && !('post' in props)) {
+    			console.warn("<Content> was created without expected prop 'post'");
+    		}
+    		if (ctx.customType === undefined && !('customType' in props)) {
+    			console.warn("<Content> was created without expected prop 'customType'");
+    		}
+    	}
+
+    	get post() {
+    		throw new Error("<Content>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+
+    	set post(value) {
+    		throw new Error("<Content>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+
+    	get customType() {
+    		throw new Error("<Content>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+
+    	set customType(value) {
+    		throw new Error("<Content>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+    }
+
+    /* src/components/Post.svelte generated by Svelte v3.7.1 */
+
+    const file$7 = "src/components/Post.svelte";
+
+    // (153:0) {#if isReply == true}
+    function create_if_block_5(ctx) {
+    	var div, current;
+
+    	var if_block = (typeof ctx.inReply === 'object' && typeof ctx.inReply.id != 'string') && create_if_block_6(ctx);
+
+    	return {
+    		c: function create() {
+    			div = element("div");
+    			if (if_block) if_block.c();
+    			attr(div, "class", "reaction svelte-soap13");
+    			add_location(div, file$7, 153, 2, 3185);
+    		},
+
+    		m: function mount(target, anchor) {
+    			insert(target, div, anchor);
+    			if (if_block) if_block.m(div, null);
+    			current = true;
+    		},
+
+    		p: function update(changed, ctx) {
+    			if (typeof ctx.inReply === 'object' && typeof ctx.inReply.id != 'string') {
+    				if (if_block) {
+    					if_block.p(changed, ctx);
+    					transition_in(if_block, 1);
+    				} else {
+    					if_block = create_if_block_6(ctx);
+    					if_block.c();
+    					transition_in(if_block, 1);
+    					if_block.m(div, null);
+    				}
+    			} else if (if_block) {
+    				group_outros();
+    				transition_out(if_block, 1, 1, () => {
+    					if_block = null;
+    				});
+    				check_outros();
     			}
     		},
 
@@ -1971,65 +2198,22 @@ var app = (function () {
     				detach(div);
     			}
 
-    			if_blocks[current_block_type_index].d();
+    			if (if_block) if_block.d();
     		}
     	};
     }
 
-    // (151:4) {:else}
-    function create_else_block$1(ctx) {
-    	var current;
-
-    	var postcontent = new PostContent({
-    		props: { post: ctx.inReply },
-    		$$inline: true
-    	});
-
-    	return {
-    		c: function create() {
-    			postcontent.$$.fragment.c();
-    		},
-
-    		m: function mount(target, anchor) {
-    			mount_component(postcontent, target, anchor);
-    			current = true;
-    		},
-
-    		p: function update(changed, ctx) {
-    			var postcontent_changes = {};
-    			if (changed.inReply) postcontent_changes.post = ctx.inReply;
-    			postcontent.$set(postcontent_changes);
-    		},
-
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(postcontent.$$.fragment, local);
-
-    			current = true;
-    		},
-
-    		o: function outro(local) {
-    			transition_out(postcontent.$$.fragment, local);
-    			current = false;
-    		},
-
-    		d: function destroy(detaching) {
-    			destroy_component(postcontent, detaching);
-    		}
-    	};
-    }
-
-    // (147:4) {#if typeof inReply === 'object' && typeof inReply.id != 'string'}
-    function create_if_block_5$1(ctx) {
+    // (155:4) {#if typeof inReply === 'object' && typeof inReply.id != 'string'}
+    function create_if_block_6(ctx) {
     	var await_block_anchor, promise, current;
 
     	let info = {
     		ctx,
     		current: null,
     		token: null,
-    		pending: create_pending_block,
-    		then: create_then_block,
-    		catch: create_catch_block,
+    		pending: create_pending_block_4,
+    		then: create_then_block_4,
+    		catch: create_catch_block_4,
     		value: 'value',
     		error: 'null',
     		blocks: [,,,]
@@ -2091,7 +2275,7 @@ var app = (function () {
     }
 
     // (1:0) <script>   export let post;   export let session;    import { ensureObject }
-    function create_catch_block(ctx) {
+    function create_catch_block_4(ctx) {
     	return {
     		c: noop,
     		m: noop,
@@ -2102,11 +2286,11 @@ var app = (function () {
     	};
     }
 
-    // (148:33)          <PostContent post={value}
-    function create_then_block(ctx) {
+    // (156:33)          <PostContent post={value}
+    function create_then_block_4(ctx) {
     	var current;
 
-    	var postcontent = new PostContent({
+    	var postcontent = new Content({
     		props: { post: ctx.value },
     		$$inline: true
     	});
@@ -2146,7 +2330,7 @@ var app = (function () {
     }
 
     // (1:0) <script>   export let post;   export let session;    import { ensureObject }
-    function create_pending_block(ctx) {
+    function create_pending_block_4(ctx) {
     	return {
     		c: noop,
     		m: noop,
@@ -2157,15 +2341,171 @@ var app = (function () {
     	};
     }
 
-    // (165:2) {#if $session.user}
-    function create_if_block$2(ctx) {
+    // (1:0) <script>   export let post;   export let session;    import { ensureObject }
+    function create_catch_block_3(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		d: noop
+    	};
+    }
+
+    // (167:29)        <span class="rs_left" on:click={toggleLists}
+    function create_then_block_3(ctx) {
+    	var span, t0_value = ctx.likes, t0, t1, dispose;
+
+    	return {
+    		c: function create() {
+    			span = element("span");
+    			t0 = text(t0_value);
+    			t1 = text(" likes");
+    			attr(span, "class", "rs_left svelte-soap13");
+    			add_location(span, file$7, 167, 6, 3507);
+    			dispose = listen(span, "click", ctx.toggleLists);
+    		},
+
+    		m: function mount(target, anchor) {
+    			insert(target, span, anchor);
+    			append(span, t0);
+    			append(span, t1);
+    		},
+
+    		p: noop,
+
+    		d: function destroy(detaching) {
+    			if (detaching) {
+    				detach(span);
+    			}
+
+    			dispose();
+    		}
+    	};
+    }
+
+    // (1:0) <script>   export let post;   export let session;    import { ensureObject }
+    function create_pending_block_3(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		d: noop
+    	};
+    }
+
+    // (1:0) <script>   export let post;   export let session;    import { ensureObject }
+    function create_catch_block_2(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		d: noop
+    	};
+    }
+
+    // (170:35)        <span class="rs_right" on:click={toggleLists}
+    function create_then_block_2(ctx) {
+    	var span, t0_value = ctx.comments.totalItems !== null ? ctx.comments.totalItems : ctx.comments, t0, t1, dispose;
+
+    	return {
+    		c: function create() {
+    			span = element("span");
+    			t0 = text(t0_value);
+    			t1 = text(" comments");
+    			attr(span, "class", "rs_right svelte-soap13");
+    			add_location(span, file$7, 170, 6, 3628);
+    			dispose = listen(span, "click", ctx.toggleLists);
+    		},
+
+    		m: function mount(target, anchor) {
+    			insert(target, span, anchor);
+    			append(span, t0);
+    			append(span, t1);
+    		},
+
+    		p: noop,
+
+    		d: function destroy(detaching) {
+    			if (detaching) {
+    				detach(span);
+    			}
+
+    			dispose();
+    		}
+    	};
+    }
+
+    // (1:0) <script>   export let post;   export let session;    import { ensureObject }
+    function create_pending_block_2(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		d: noop
+    	};
+    }
+
+    // (1:0) <script>   export let post;   export let session;    import { ensureObject }
+    function create_catch_block_1(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		d: noop
+    	};
+    }
+
+    // (175:37)        <span class="rs_right" on:click={toggleLists}
+    function create_then_block_1(ctx) {
+    	var span, t0_value = ctx.announces, t0, t1, dispose;
+
+    	return {
+    		c: function create() {
+    			span = element("span");
+    			t0 = text(t0_value);
+    			t1 = text(" announces");
+    			attr(span, "class", "rs_right svelte-soap13");
+    			add_location(span, file$7, 175, 6, 3827);
+    			dispose = listen(span, "click", ctx.toggleLists);
+    		},
+
+    		m: function mount(target, anchor) {
+    			insert(target, span, anchor);
+    			append(span, t0);
+    			append(span, t1);
+    		},
+
+    		p: noop,
+
+    		d: function destroy(detaching) {
+    			if (detaching) {
+    				detach(span);
+    			}
+
+    			dispose();
+    		}
+    	};
+    }
+
+    // (1:0) <script>   export let post;   export let session;    import { ensureObject }
+    function create_pending_block_1(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		d: noop
+    	};
+    }
+
+    // (179:2) {#if $session.user}
+    function create_if_block_1$2(ctx) {
     	var div, button0, t0, t1, button1, t3, button2, t4, t5, if_block2_anchor, current, dispose;
 
-    	var if_block0 = (ctx.liked) && create_if_block_3$1();
+    	var if_block0 = (ctx.liked) && create_if_block_4();
 
-    	var if_block1 = (ctx.announced) && create_if_block_2$1();
+    	var if_block1 = (ctx.announced) && create_if_block_3$1();
 
-    	var if_block2 = (ctx.showPublish) && create_if_block_1$2(ctx);
+    	var if_block2 = (ctx.showPublish) && create_if_block_2$1(ctx);
 
     	return {
     		c: function create() {
@@ -2183,14 +2523,14 @@ var app = (function () {
     			t5 = space();
     			if (if_block2) if_block2.c();
     			if_block2_anchor = empty();
-    			attr(button0, "class", "ra_item svelte-ni4kye");
-    			add_location(button0, file$5, 166, 6, 3365);
-    			attr(button1, "class", "ra_item svelte-ni4kye");
-    			add_location(button1, file$5, 169, 6, 3442);
-    			attr(button2, "class", "ra_item svelte-ni4kye");
-    			add_location(button2, file$5, 170, 6, 3518);
-    			attr(div, "class", "ra svelte-ni4kye");
-    			add_location(div, file$5, 165, 4, 3342);
+    			attr(button0, "class", "ra_item svelte-soap13");
+    			add_location(button0, file$7, 180, 6, 3973);
+    			attr(button1, "class", "ra_item svelte-soap13");
+    			add_location(button1, file$7, 183, 6, 4050);
+    			attr(button2, "class", "ra_item svelte-soap13");
+    			add_location(button2, file$7, 184, 6, 4126);
+    			attr(div, "class", "ra svelte-soap13");
+    			add_location(div, file$7, 179, 4, 3950);
 
     			dispose = [
     				listen(button1, "click", ctx.togglePublish),
@@ -2218,7 +2558,7 @@ var app = (function () {
     		p: function update(changed, ctx) {
     			if (ctx.liked) {
     				if (!if_block0) {
-    					if_block0 = create_if_block_3$1();
+    					if_block0 = create_if_block_4();
     					if_block0.c();
     					if_block0.m(button0, null);
     				}
@@ -2229,7 +2569,7 @@ var app = (function () {
 
     			if (ctx.announced) {
     				if (!if_block1) {
-    					if_block1 = create_if_block_2$1();
+    					if_block1 = create_if_block_3$1();
     					if_block1.c();
     					if_block1.m(button2, null);
     				}
@@ -2243,7 +2583,7 @@ var app = (function () {
     					if_block2.p(changed, ctx);
     					transition_in(if_block2, 1);
     				} else {
-    					if_block2 = create_if_block_1$2(ctx);
+    					if_block2 = create_if_block_2$1(ctx);
     					if_block2.c();
     					transition_in(if_block2, 1);
     					if_block2.m(if_block2_anchor.parentNode, if_block2_anchor);
@@ -2291,7 +2631,28 @@ var app = (function () {
     	};
     }
 
-    // (168:12) {#if liked}
+    // (182:12) {#if liked}
+    function create_if_block_4(ctx) {
+    	var t;
+
+    	return {
+    		c: function create() {
+    			t = text("d");
+    		},
+
+    		m: function mount(target, anchor) {
+    			insert(target, t, anchor);
+    		},
+
+    		d: function destroy(detaching) {
+    			if (detaching) {
+    				detach(t);
+    			}
+    		}
+    	};
+    }
+
+    // (186:16) {#if announced}
     function create_if_block_3$1(ctx) {
     	var t;
 
@@ -2312,29 +2673,8 @@ var app = (function () {
     	};
     }
 
-    // (172:16) {#if announced}
+    // (189:4) {#if showPublish}
     function create_if_block_2$1(ctx) {
-    	var t;
-
-    	return {
-    		c: function create() {
-    			t = text("d");
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, t, anchor);
-    		},
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(t);
-    			}
-    		}
-    	};
-    }
-
-    // (175:4) {#if showPublish}
-    function create_if_block_1$2(ctx) {
     	var current;
 
     	var publish = new Publish({
@@ -2380,12 +2720,150 @@ var app = (function () {
     	};
     }
 
-    function create_fragment$5(ctx) {
-    	var t0, t1, div1, div0, span0, t2, t3, t4, span1, t5, t6, t7, span2, t8, t9, t10, current, dispose;
+    // (1:0) <script>   export let post;   export let session;    import { ensureObject }
+    function create_catch_block(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		i: noop,
+    		o: noop,
+    		d: noop
+    	};
+    }
 
-    	var if_block0 = (ctx.isReply == true) && create_if_block_4$1(ctx);
+    // (193:35)      {#if collection.totalItems}
+    function create_then_block(ctx) {
+    	var if_block_anchor, current;
 
-    	var postcontent = new PostContent({
+    	var if_block = (ctx.collection.totalItems) && create_if_block$3(ctx);
+
+    	return {
+    		c: function create() {
+    			if (if_block) if_block.c();
+    			if_block_anchor = empty();
+    		},
+
+    		m: function mount(target, anchor) {
+    			if (if_block) if_block.m(target, anchor);
+    			insert(target, if_block_anchor, anchor);
+    			current = true;
+    		},
+
+    		p: function update(changed, ctx) {
+    			if (ctx.collection.totalItems) {
+    				if (if_block) {
+    					if_block.p(changed, ctx);
+    					transition_in(if_block, 1);
+    				} else {
+    					if_block = create_if_block$3(ctx);
+    					if_block.c();
+    					transition_in(if_block, 1);
+    					if_block.m(if_block_anchor.parentNode, if_block_anchor);
+    				}
+    			} else if (if_block) {
+    				group_outros();
+    				transition_out(if_block, 1, 1, () => {
+    					if_block = null;
+    				});
+    				check_outros();
+    			}
+    		},
+
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(if_block);
+    			current = true;
+    		},
+
+    		o: function outro(local) {
+    			transition_out(if_block);
+    			current = false;
+    		},
+
+    		d: function destroy(detaching) {
+    			if (if_block) if_block.d(detaching);
+
+    			if (detaching) {
+    				detach(if_block_anchor);
+    			}
+    		}
+    	};
+    }
+
+    // (194:4) {#if collection.totalItems}
+    function create_if_block$3(ctx) {
+    	var div, current;
+
+    	var collection = new Collection({
+    		props: {
+    		session: ctx.session,
+    		collection: ctx.collection
+    	},
+    		$$inline: true
+    	});
+
+    	return {
+    		c: function create() {
+    			div = element("div");
+    			collection.$$.fragment.c();
+    			attr(div, "class", "comments svelte-soap13");
+    			add_location(div, file$7, 194, 6, 4393);
+    		},
+
+    		m: function mount(target, anchor) {
+    			insert(target, div, anchor);
+    			mount_component(collection, div, null);
+    			current = true;
+    		},
+
+    		p: function update(changed, ctx) {
+    			var collection_changes = {};
+    			if (changed.session) collection_changes.session = ctx.session;
+    			if (changed.comments) collection_changes.collection = ctx.collection;
+    			collection.$set(collection_changes);
+    		},
+
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(collection.$$.fragment, local);
+
+    			current = true;
+    		},
+
+    		o: function outro(local) {
+    			transition_out(collection.$$.fragment, local);
+    			current = false;
+    		},
+
+    		d: function destroy(detaching) {
+    			if (detaching) {
+    				detach(div);
+    			}
+
+    			destroy_component(collection);
+    		}
+    	};
+    }
+
+    // (1:0) <script>   export let post;   export let session;    import { ensureObject }
+    function create_pending_block(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		i: noop,
+    		o: noop,
+    		d: noop
+    	};
+    }
+
+    function create_fragment$7(ctx) {
+    	var t0, t1, div1, div0, promise, t2, promise_1, t3, promise_2, t4, t5, promise_3, current;
+
+    	var if_block0 = (ctx.isReply == true) && create_if_block_5(ctx);
+
+    	var postcontent = new Content({
     		props: {
     		post: ctx.post,
     		customType: ctx.customType
@@ -2393,7 +2871,60 @@ var app = (function () {
     		$$inline: true
     	});
 
-    	var if_block1 = (ctx.$session.user) && create_if_block$2(ctx);
+    	let info = {
+    		ctx,
+    		current: null,
+    		token: null,
+    		pending: create_pending_block_3,
+    		then: create_then_block_3,
+    		catch: create_catch_block_3,
+    		value: 'likes',
+    		error: 'null'
+    	};
+
+    	handle_promise(promise = ctx.likes, info);
+
+    	let info_1 = {
+    		ctx,
+    		current: null,
+    		token: null,
+    		pending: create_pending_block_2,
+    		then: create_then_block_2,
+    		catch: create_catch_block_2,
+    		value: 'comments',
+    		error: 'null'
+    	};
+
+    	handle_promise(promise_1 = ctx.comments, info_1);
+
+    	let info_2 = {
+    		ctx,
+    		current: null,
+    		token: null,
+    		pending: create_pending_block_1,
+    		then: create_then_block_1,
+    		catch: create_catch_block_1,
+    		value: 'announces',
+    		error: 'null'
+    	};
+
+    	handle_promise(promise_2 = ctx.announces, info_2);
+
+    	var if_block1 = (ctx.$session.user) && create_if_block_1$2(ctx);
+
+    	let info_3 = {
+    		ctx,
+    		current: null,
+    		token: null,
+    		pending: create_pending_block,
+    		then: create_then_block,
+    		catch: create_catch_block,
+    		value: 'collection',
+    		error: 'null',
+    		blocks: [,,,]
+    	};
+
+    	handle_promise(promise_3 = ctx.comments, info_3);
 
     	return {
     		c: function create() {
@@ -2403,35 +2934,26 @@ var app = (function () {
     			t1 = space();
     			div1 = element("div");
     			div0 = element("div");
-    			span0 = element("span");
-    			t2 = text(ctx.likes);
-    			t3 = text(" likes");
-    			t4 = space();
-    			span1 = element("span");
-    			t5 = text(ctx.comments);
-    			t6 = text(" comments");
-    			t7 = space();
-    			span2 = element("span");
-    			t8 = text(ctx.announces);
-    			t9 = text(" announces");
-    			t10 = space();
-    			if (if_block1) if_block1.c();
-    			attr(span0, "class", "rs_left svelte-ni4kye");
-    			add_location(span0, file$5, 160, 4, 3085);
-    			attr(span1, "class", "rs_right svelte-ni4kye");
-    			add_location(span1, file$5, 161, 4, 3155);
-    			attr(span2, "class", "rs_right svelte-ni4kye");
-    			add_location(span2, file$5, 162, 4, 3232);
-    			attr(div0, "class", "rs svelte-ni4kye");
-    			add_location(div0, file$5, 159, 2, 3064);
-    			attr(div1, "class", "reactionz svelte-ni4kye");
-    			add_location(div1, file$5, 158, 0, 3038);
 
-    			dispose = [
-    				listen(span0, "click", ctx.toggleLists),
-    				listen(span1, "click", ctx.toggleLists),
-    				listen(span2, "click", ctx.toggleLists)
-    			];
+    			info.block.c();
+
+    			t2 = space();
+
+    			info_1.block.c();
+
+    			t3 = space();
+
+    			info_2.block.c();
+
+    			t4 = space();
+    			if (if_block1) if_block1.c();
+    			t5 = space();
+
+    			info_3.block.c();
+    			attr(div0, "class", "rs svelte-soap13");
+    			add_location(div0, file$7, 165, 2, 3454);
+    			attr(div1, "class", "reactionz svelte-soap13");
+    			add_location(div1, file$7, 164, 0, 3428);
     		},
 
     		l: function claim(nodes) {
@@ -2445,29 +2967,42 @@ var app = (function () {
     			insert(target, t1, anchor);
     			insert(target, div1, anchor);
     			append(div1, div0);
-    			append(div0, span0);
-    			append(span0, t2);
-    			append(span0, t3);
-    			append(div0, t4);
-    			append(div0, span1);
-    			append(span1, t5);
-    			append(span1, t6);
-    			append(div0, t7);
-    			append(div0, span2);
-    			append(span2, t8);
-    			append(span2, t9);
-    			append(div1, t10);
+
+    			info.block.m(div0, info.anchor = null);
+    			info.mount = () => div0;
+    			info.anchor = t2;
+
+    			append(div0, t2);
+
+    			info_1.block.m(div0, info_1.anchor = null);
+    			info_1.mount = () => div0;
+    			info_1.anchor = t3;
+
+    			append(div0, t3);
+
+    			info_2.block.m(div0, info_2.anchor = null);
+    			info_2.mount = () => div0;
+    			info_2.anchor = null;
+
+    			append(div1, t4);
     			if (if_block1) if_block1.m(div1, null);
+    			append(div1, t5);
+
+    			info_3.block.m(div1, info_3.anchor = null);
+    			info_3.mount = () => div1;
+    			info_3.anchor = null;
+
     			current = true;
     		},
 
-    		p: function update(changed, ctx) {
+    		p: function update(changed, new_ctx) {
+    			ctx = new_ctx;
     			if (ctx.isReply == true) {
     				if (if_block0) {
     					if_block0.p(changed, ctx);
     					transition_in(if_block0, 1);
     				} else {
-    					if_block0 = create_if_block_4$1(ctx);
+    					if_block0 = create_if_block_5(ctx);
     					if_block0.c();
     					transition_in(if_block0, 1);
     					if_block0.m(t0.parentNode, t0);
@@ -2485,16 +3020,22 @@ var app = (function () {
     			if (changed.customType) postcontent_changes.customType = ctx.customType;
     			postcontent.$set(postcontent_changes);
 
-    			if (!current || changed.likes) {
-    				set_data(t2, ctx.likes);
+    			info.ctx = ctx;
+
+    			if (promise !== (promise = ctx.likes) && handle_promise(promise, info)) ; else {
+    				info.block.p(changed, assign(assign({}, ctx), info.resolved));
     			}
 
-    			if (!current || changed.comments) {
-    				set_data(t5, ctx.comments);
+    			info_1.ctx = ctx;
+
+    			if (promise_1 !== (promise_1 = ctx.comments) && handle_promise(promise_1, info_1)) ; else {
+    				info_1.block.p(changed, assign(assign({}, ctx), info_1.resolved));
     			}
 
-    			if (!current || changed.announces) {
-    				set_data(t8, ctx.announces);
+    			info_2.ctx = ctx;
+
+    			if (promise_2 !== (promise_2 = ctx.announces) && handle_promise(promise_2, info_2)) ; else {
+    				info_2.block.p(changed, assign(assign({}, ctx), info_2.resolved));
     			}
 
     			if (ctx.$session.user) {
@@ -2502,10 +3043,10 @@ var app = (function () {
     					if_block1.p(changed, ctx);
     					transition_in(if_block1, 1);
     				} else {
-    					if_block1 = create_if_block$2(ctx);
+    					if_block1 = create_if_block_1$2(ctx);
     					if_block1.c();
     					transition_in(if_block1, 1);
-    					if_block1.m(div1, null);
+    					if_block1.m(div1, t5);
     				}
     			} else if (if_block1) {
     				group_outros();
@@ -2513,6 +3054,12 @@ var app = (function () {
     					if_block1 = null;
     				});
     				check_outros();
+    			}
+
+    			info_3.ctx = ctx;
+
+    			if (promise_3 !== (promise_3 = ctx.comments) && handle_promise(promise_3, info_3)) ; else {
+    				info_3.block.p(changed, assign(assign({}, ctx), info_3.resolved));
     			}
     		},
 
@@ -2523,6 +3070,7 @@ var app = (function () {
     			transition_in(postcontent.$$.fragment, local);
 
     			transition_in(if_block1);
+    			transition_in(info_3.block);
     			current = true;
     		},
 
@@ -2530,6 +3078,12 @@ var app = (function () {
     			transition_out(if_block0);
     			transition_out(postcontent.$$.fragment, local);
     			transition_out(if_block1);
+
+    			for (let i = 0; i < 3; i += 1) {
+    				const block = info_3.blocks[i];
+    				transition_out(block);
+    			}
+
     			current = false;
     		},
 
@@ -2547,19 +3101,35 @@ var app = (function () {
     				detach(div1);
     			}
 
+    			info.block.d();
+    			info.token = null;
+    			info = null;
+
+    			info_1.block.d();
+    			info_1.token = null;
+    			info_1 = null;
+
+    			info_2.block.d();
+    			info_2.token = null;
+    			info_2 = null;
+
     			if (if_block1) if_block1.d();
-    			run_all(dispose);
+
+    			info_3.block.d();
+    			info_3.token = null;
+    			info_3 = null;
     		}
     	};
     }
 
-    function instance$4($$self, $$props, $$invalidate) {
+    function instance$6($$self, $$props, $$invalidate) {
     	let $session;
 
     	let { post, session } = $$props; validate_store(session, 'session'); component_subscribe($$self, session, $$value => { $session = $$value; $$invalidate('$session', $session); });
 
       let pgi = pubgate_instance;
       let showPublish = false;
+
       const togglePublish = ev => {
         ev.preventDefault();
         $$invalidate('showPublish', showPublish = !showPublish);
@@ -2592,27 +3162,27 @@ var app = (function () {
       let inReply;
       let isReply = false;
 
-      let likes = "n/a";
-      let comments = "n/a";
-      let announces = "n/a";
+      const getCount = async (item, returnAll = false) => {
+        if (!item) return "n/a";
+        const data = typeof item === "string" ? await fetchItem(item) : item;
+        return returnAll ? data : data.totalItems;
+      };
+
+      const fetchItem = path => {
+        let headers = { Accept: "application/activity+json" };
+        const url = pgi ? path + "?cached=1" : path;
+        return fetch(url, { headers })
+          .then(d => d.json())
+          .then(d => d);
+      };
+
+      let likes = getCount(post.likes);
+      let comments = getCount(post.replies, true);
+      let announces = getCount(post.shares);
 
       if (post.inReplyTo) {
-        $$invalidate('inReply', inReply = pgi
-          ? post.inReplyTo
-          : ensureObject(post.inReplyTo));
+        $$invalidate('inReply', inReply = pgi ? post.inReplyTo : ensureObject(post.inReplyTo));
         $$invalidate('isReply', isReply = true);
-      }
-
-      if (post.likes) {
-        $$invalidate('likes', likes = post.likes.totalItems);
-      }
-
-      if (post.shares) {
-        $$invalidate('announces', announces = post.shares.totalItems);
-      }
-
-      if (post.replies) {
-        $$invalidate('comments', comments = post.replies.totalItems);
       }
 
       let customType = isReply ? "Reply" : null;
@@ -2668,7 +3238,7 @@ var app = (function () {
     class Post extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$4, create_fragment$5, safe_not_equal, ["post", "session"]);
+    		init(this, options, instance$6, create_fragment$7, safe_not_equal, ["post", "session"]);
 
     		const { ctx } = this.$$;
     		const props = options.props || {};
@@ -2699,13 +3269,16 @@ var app = (function () {
 
     /* src/components/Activity.svelte generated by Svelte v3.7.1 */
 
-    const file$6 = "src/components/Activity.svelte";
+    const file$8 = "src/components/Activity.svelte";
 
-    // (29:2) {:else}
-    function create_else_block$2(ctx) {
-    	var div0, h2, t1, a0, t2_value = ctx.post.type, t2, a0_href_value, t3, a1, t4_value = ctx.post.actor, t4, a1_href_value, t5, span, t7, t8, div1, current;
+    // (28:2) {:else}
+    function create_else_block$1(ctx) {
+    	var t, div, current;
 
-    	var if_block = (ctx.post.published) && create_if_block_1$3(ctx);
+    	var header = new Header({
+    		props: { post: ctx.post },
+    		$$inline: true
+    	});
 
     	var post_1 = new Post({
     		props: { post: ctx.postObject, session: ctx.session },
@@ -2714,85 +3287,26 @@ var app = (function () {
 
     	return {
     		c: function create() {
-    			div0 = element("div");
-    			h2 = element("h2");
-    			h2.textContent = ".";
-    			t1 = space();
-    			a0 = element("a");
-    			t2 = text(t2_value);
-    			t3 = text("\n      by user\n      ");
-    			a1 = element("a");
-    			t4 = text(t4_value);
-    			t5 = space();
-    			span = element("span");
-    			span.textContent = "·";
-    			t7 = space();
-    			if (if_block) if_block.c();
-    			t8 = space();
-    			div1 = element("div");
+    			header.$$.fragment.c();
+    			t = space();
+    			div = element("div");
     			post_1.$$.fragment.c();
-    			attr(h2, "id", "");
-    			add_location(h2, file$6, 30, 6, 586);
-    			attr(a0, "href", a0_href_value = ctx.post.id);
-    			add_location(a0, file$6, 31, 6, 609);
-    			attr(a1, "href", a1_href_value = ctx.post.actor);
-    			add_location(a1, file$6, 33, 6, 663);
-    			attr(span, "class", "metadata-seperator");
-    			add_location(span, file$6, 34, 6, 707);
-    			attr(div0, "class", "metadata");
-    			add_location(div0, file$6, 29, 4, 557);
-    			attr(div1, "class", "reaction svelte-fh8bnq");
-    			add_location(div1, file$6, 40, 4, 878);
+    			attr(div, "class", "reaction svelte-fh8bnq");
+    			add_location(div, file$8, 29, 4, 616);
     		},
 
     		m: function mount(target, anchor) {
-    			insert(target, div0, anchor);
-    			append(div0, h2);
-    			append(div0, t1);
-    			append(div0, a0);
-    			append(a0, t2);
-    			append(div0, t3);
-    			append(div0, a1);
-    			append(a1, t4);
-    			append(div0, t5);
-    			append(div0, span);
-    			append(div0, t7);
-    			if (if_block) if_block.m(div0, null);
-    			insert(target, t8, anchor);
-    			insert(target, div1, anchor);
-    			mount_component(post_1, div1, null);
+    			mount_component(header, target, anchor);
+    			insert(target, t, anchor);
+    			insert(target, div, anchor);
+    			mount_component(post_1, div, null);
     			current = true;
     		},
 
     		p: function update(changed, ctx) {
-    			if ((!current || changed.post) && t2_value !== (t2_value = ctx.post.type)) {
-    				set_data(t2, t2_value);
-    			}
-
-    			if ((!current || changed.post) && a0_href_value !== (a0_href_value = ctx.post.id)) {
-    				attr(a0, "href", a0_href_value);
-    			}
-
-    			if ((!current || changed.post) && t4_value !== (t4_value = ctx.post.actor)) {
-    				set_data(t4, t4_value);
-    			}
-
-    			if ((!current || changed.post) && a1_href_value !== (a1_href_value = ctx.post.actor)) {
-    				attr(a1, "href", a1_href_value);
-    			}
-
-    			if (ctx.post.published) {
-    				if (if_block) {
-    					if_block.p(changed, ctx);
-    				} else {
-    					if_block = create_if_block_1$3(ctx);
-    					if_block.c();
-    					if_block.m(div0, null);
-    				}
-    			} else if (if_block) {
-    				if_block.d(1);
-    				if_block = null;
-    			}
+    			var header_changes = {};
+    			if (changed.post) header_changes.post = ctx.post;
+    			header.$set(header_changes);
 
     			var post_1_changes = {};
     			if (changed.postObject) post_1_changes.post = ctx.postObject;
@@ -2802,26 +3316,25 @@ var app = (function () {
 
     		i: function intro(local) {
     			if (current) return;
+    			transition_in(header.$$.fragment, local);
+
     			transition_in(post_1.$$.fragment, local);
 
     			current = true;
     		},
 
     		o: function outro(local) {
+    			transition_out(header.$$.fragment, local);
     			transition_out(post_1.$$.fragment, local);
     			current = false;
     		},
 
     		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(div0);
-    			}
-
-    			if (if_block) if_block.d();
+    			destroy_component(header, detaching);
 
     			if (detaching) {
-    				detach(t8);
-    				detach(div1);
+    				detach(t);
+    				detach(div);
     			}
 
     			destroy_component(post_1);
@@ -2830,8 +3343,8 @@ var app = (function () {
     }
 
     // (26:2) {#if isReaction == false}
-    function create_if_block$3(ctx) {
-    	var h2, t_1, current;
+    function create_if_block$4(ctx) {
+    	var current;
 
     	var post_1 = new Post({
     		props: { post: ctx.post.object, session: ctx.session },
@@ -2840,17 +3353,10 @@ var app = (function () {
 
     	return {
     		c: function create() {
-    			h2 = element("h2");
-    			h2.textContent = ".";
-    			t_1 = space();
     			post_1.$$.fragment.c();
-    			attr(h2, "id", "");
-    			add_location(h2, file$6, 26, 4, 484);
     		},
 
     		m: function mount(target, anchor) {
-    			insert(target, h2, anchor);
-    			insert(target, t_1, anchor);
     			mount_component(post_1, target, anchor);
     			current = true;
     		},
@@ -2875,52 +3381,17 @@ var app = (function () {
     		},
 
     		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(h2);
-    				detach(t_1);
-    			}
-
     			destroy_component(post_1, detaching);
     		}
     	};
     }
 
-    // (37:6) {#if post.published}
-    function create_if_block_1$3(ctx) {
-    	var span, t_value = ctx.post.published.replace('T', ' ').replace('Z', ' '), t;
-
-    	return {
-    		c: function create() {
-    			span = element("span");
-    			t = text(t_value);
-    			add_location(span, file$6, 37, 8, 785);
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, span, anchor);
-    			append(span, t);
-    		},
-
-    		p: function update(changed, ctx) {
-    			if ((changed.post) && t_value !== (t_value = ctx.post.published.replace('T', ' ').replace('Z', ' '))) {
-    				set_data(t, t_value);
-    			}
-    		},
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(span);
-    			}
-    		}
-    	};
-    }
-
-    function create_fragment$6(ctx) {
+    function create_fragment$8(ctx) {
     	var li, current_block_type_index, if_block, current;
 
     	var if_block_creators = [
-    		create_if_block$3,
-    		create_else_block$2
+    		create_if_block$4,
+    		create_else_block$1
     	];
 
     	var if_blocks = [];
@@ -2938,7 +3409,7 @@ var app = (function () {
     			li = element("li");
     			if_block.c();
     			attr(li, "class", "post");
-    			add_location(li, file$6, 24, 0, 434);
+    			add_location(li, file$8, 24, 0, 492);
     		},
 
     		l: function claim(nodes) {
@@ -2994,17 +3465,17 @@ var app = (function () {
     	};
     }
 
-    function instance$5($$self, $$props, $$invalidate) {
-    	let { post, session } = $$props;
+    function instance$7($$self, $$props, $$invalidate) {
+    	
+
+      let { post, session } = $$props;
 
       let pgi = pubgate_instance;
       let postObject;
       let isReaction = false;
 
-      if (["Announce", "Like"].includes(post.type)) {
-         $$invalidate('postObject', postObject = pgi
-          ? post.object
-          : ensureObject(post.object));
+      if (["Announce", "Like"].includes(post.type) || post.object.inReplyTo) {
+        $$invalidate('postObject', postObject = pgi ? post.object : ensureObject(post.object));
         $$invalidate('isReaction', isReaction = true);
       }
 
@@ -3024,7 +3495,7 @@ var app = (function () {
     class Activity extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$5, create_fragment$6, safe_not_equal, ["post", "session"]);
+    		init(this, options, instance$7, create_fragment$8, safe_not_equal, ["post", "session"]);
 
     		const { ctx } = this.$$;
     		const props = options.props || {};
@@ -3053,207 +3524,22 @@ var app = (function () {
     	}
     }
 
-    /* src/components/TimeLine.svelte generated by Svelte v3.7.1 */
+    /* src/components/Collection.svelte generated by Svelte v3.7.1 */
 
-    const file$7 = "src/components/TimeLine.svelte";
+    const file$9 = "src/components/Collection.svelte";
 
-    function get_each_context$1(ctx, list, i) {
+    function get_each_context$2(ctx, list, i) {
     	const child_ctx = Object.create(ctx);
     	child_ctx.post = list[i];
     	return child_ctx;
     }
 
-    // (1:0) <script>   export let curRoute;   export let session;   export let outbox_collection = {}
-    function create_catch_block$1(ctx) {
-    	return {
-    		c: noop,
-    		m: noop,
-    		p: noop,
-    		i: noop,
-    		o: noop,
-    		d: noop
-    	};
-    }
-
-    // (75:25)    <ul class="post-list">     {#each value as post}
-    function create_then_block$1(ctx) {
-    	var ul, t0, div, t1, t2, t3, current;
-
-    	var each_value = ctx.value;
-
-    	var each_blocks = [];
-
-    	for (var i = 0; i < each_value.length; i += 1) {
-    		each_blocks[i] = create_each_block$1(get_each_context$1(ctx, each_value, i));
-    	}
-
-    	const out = i => transition_out(each_blocks[i], 1, 1, () => {
-    		each_blocks[i] = null;
-    	});
-
-    	var if_block0 = (ctx.homeUrl) && create_if_block_3$2(ctx);
-
-    	var if_block1 = (ctx.prevUrl) && create_if_block_2$2(ctx);
-
-    	var if_block2 = (ctx.page) && create_if_block_1$4(ctx);
-
-    	var if_block3 = (ctx.nextUrl) && create_if_block$4(ctx);
-
-    	return {
-    		c: function create() {
-    			ul = element("ul");
-
-    			for (var i = 0; i < each_blocks.length; i += 1) {
-    				each_blocks[i].c();
-    			}
-
-    			t0 = space();
-    			div = element("div");
-    			if (if_block0) if_block0.c();
-    			t1 = space();
-    			if (if_block1) if_block1.c();
-    			t2 = space();
-    			if (if_block2) if_block2.c();
-    			t3 = space();
-    			if (if_block3) if_block3.c();
-    			attr(ul, "class", "post-list");
-    			add_location(ul, file$7, 75, 2, 2062);
-    			attr(div, "class", "navigation svelte-1crpel7");
-    			add_location(div, file$7, 81, 2, 2170);
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, ul, anchor);
-
-    			for (var i = 0; i < each_blocks.length; i += 1) {
-    				each_blocks[i].m(ul, null);
-    			}
-
-    			insert(target, t0, anchor);
-    			insert(target, div, anchor);
-    			if (if_block0) if_block0.m(div, null);
-    			append(div, t1);
-    			if (if_block1) if_block1.m(div, null);
-    			append(div, t2);
-    			if (if_block2) if_block2.m(div, null);
-    			append(div, t3);
-    			if (if_block3) if_block3.m(div, null);
-    			current = true;
-    		},
-
-    		p: function update(changed, ctx) {
-    			if (changed.posts || changed.session) {
-    				each_value = ctx.value;
-
-    				for (var i = 0; i < each_value.length; i += 1) {
-    					const child_ctx = get_each_context$1(ctx, each_value, i);
-
-    					if (each_blocks[i]) {
-    						each_blocks[i].p(changed, child_ctx);
-    						transition_in(each_blocks[i], 1);
-    					} else {
-    						each_blocks[i] = create_each_block$1(child_ctx);
-    						each_blocks[i].c();
-    						transition_in(each_blocks[i], 1);
-    						each_blocks[i].m(ul, null);
-    					}
-    				}
-
-    				group_outros();
-    				for (i = each_value.length; i < each_blocks.length; i += 1) out(i);
-    				check_outros();
-    			}
-
-    			if (ctx.homeUrl) {
-    				if (!if_block0) {
-    					if_block0 = create_if_block_3$2(ctx);
-    					if_block0.c();
-    					if_block0.m(div, t1);
-    				}
-    			} else if (if_block0) {
-    				if_block0.d(1);
-    				if_block0 = null;
-    			}
-
-    			if (ctx.prevUrl) {
-    				if (!if_block1) {
-    					if_block1 = create_if_block_2$2(ctx);
-    					if_block1.c();
-    					if_block1.m(div, t2);
-    				}
-    			} else if (if_block1) {
-    				if_block1.d(1);
-    				if_block1 = null;
-    			}
-
-    			if (ctx.page) {
-    				if (if_block2) {
-    					if_block2.p(changed, ctx);
-    				} else {
-    					if_block2 = create_if_block_1$4(ctx);
-    					if_block2.c();
-    					if_block2.m(div, t3);
-    				}
-    			} else if (if_block2) {
-    				if_block2.d(1);
-    				if_block2 = null;
-    			}
-
-    			if (ctx.nextUrl) {
-    				if (!if_block3) {
-    					if_block3 = create_if_block$4(ctx);
-    					if_block3.c();
-    					if_block3.m(div, null);
-    				}
-    			} else if (if_block3) {
-    				if_block3.d(1);
-    				if_block3 = null;
-    			}
-    		},
-
-    		i: function intro(local) {
-    			if (current) return;
-    			for (var i = 0; i < each_value.length; i += 1) transition_in(each_blocks[i]);
-
-    			current = true;
-    		},
-
-    		o: function outro(local) {
-    			each_blocks = each_blocks.filter(Boolean);
-    			for (let i = 0; i < each_blocks.length; i += 1) transition_out(each_blocks[i]);
-
-    			current = false;
-    		},
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(ul);
-    			}
-
-    			destroy_each(each_blocks, detaching);
-
-    			if (detaching) {
-    				detach(t0);
-    				detach(div);
-    			}
-
-    			if (if_block0) if_block0.d();
-    			if (if_block1) if_block1.d();
-    			if (if_block2) if_block2.d();
-    			if (if_block3) if_block3.d();
-    		}
-    	};
-    }
-
-    // (77:4) {#each value as post}
-    function create_each_block$1(ctx) {
+    // (32:2) {#each posts as post}
+    function create_each_block$2(ctx) {
     	var current;
 
     	var activity = new Activity({
-    		props: {
-    		post: ctx.post,
-    		session: ctx.session
-    	},
+    		props: { post: ctx.post, session: ctx.session },
     		$$inline: true
     	});
 
@@ -3292,15 +3578,113 @@ var app = (function () {
     	};
     }
 
-    // (83:4) {#if homeUrl}
-    function create_if_block_3$2(ctx) {
+    // (37:0) {#if homeUrl || prevUrl || nextUrl}
+    function create_if_block$5(ctx) {
+    	var div, t0, t1, t2;
+
+    	var if_block0 = (ctx.homeUrl) && create_if_block_4$1(ctx);
+
+    	var if_block1 = (ctx.prevUrl) && create_if_block_3$2(ctx);
+
+    	var if_block2 = (ctx.page) && create_if_block_2$2(ctx);
+
+    	var if_block3 = (ctx.nextUrl) && create_if_block_1$3(ctx);
+
+    	return {
+    		c: function create() {
+    			div = element("div");
+    			if (if_block0) if_block0.c();
+    			t0 = space();
+    			if (if_block1) if_block1.c();
+    			t1 = space();
+    			if (if_block2) if_block2.c();
+    			t2 = space();
+    			if (if_block3) if_block3.c();
+    			attr(div, "class", "navigation");
+    			add_location(div, file$9, 37, 2, 1063);
+    		},
+
+    		m: function mount(target, anchor) {
+    			insert(target, div, anchor);
+    			if (if_block0) if_block0.m(div, null);
+    			append(div, t0);
+    			if (if_block1) if_block1.m(div, null);
+    			append(div, t1);
+    			if (if_block2) if_block2.m(div, null);
+    			append(div, t2);
+    			if (if_block3) if_block3.m(div, null);
+    		},
+
+    		p: function update(changed, ctx) {
+    			if (ctx.homeUrl) {
+    				if (!if_block0) {
+    					if_block0 = create_if_block_4$1(ctx);
+    					if_block0.c();
+    					if_block0.m(div, t0);
+    				}
+    			} else if (if_block0) {
+    				if_block0.d(1);
+    				if_block0 = null;
+    			}
+
+    			if (ctx.prevUrl) {
+    				if (!if_block1) {
+    					if_block1 = create_if_block_3$2(ctx);
+    					if_block1.c();
+    					if_block1.m(div, t1);
+    				}
+    			} else if (if_block1) {
+    				if_block1.d(1);
+    				if_block1 = null;
+    			}
+
+    			if (ctx.page) {
+    				if (if_block2) {
+    					if_block2.p(changed, ctx);
+    				} else {
+    					if_block2 = create_if_block_2$2(ctx);
+    					if_block2.c();
+    					if_block2.m(div, t2);
+    				}
+    			} else if (if_block2) {
+    				if_block2.d(1);
+    				if_block2 = null;
+    			}
+
+    			if (ctx.nextUrl) {
+    				if (!if_block3) {
+    					if_block3 = create_if_block_1$3(ctx);
+    					if_block3.c();
+    					if_block3.m(div, null);
+    				}
+    			} else if (if_block3) {
+    				if_block3.d(1);
+    				if_block3 = null;
+    			}
+    		},
+
+    		d: function destroy(detaching) {
+    			if (detaching) {
+    				detach(div);
+    			}
+
+    			if (if_block0) if_block0.d();
+    			if (if_block1) if_block1.d();
+    			if (if_block2) if_block2.d();
+    			if (if_block3) if_block3.d();
+    		}
+    	};
+    }
+
+    // (39:4) {#if homeUrl}
+    function create_if_block_4$1(ctx) {
     	var span, dispose;
 
     	return {
     		c: function create() {
     			span = element("span");
     			span.textContent = "First";
-    			add_location(span, file$7, 83, 6, 2219);
+    			add_location(span, file$9, 39, 6, 1112);
     			dispose = listen(span, "click", ctx.click_handler);
     		},
 
@@ -3318,15 +3702,15 @@ var app = (function () {
     	};
     }
 
-    // (86:4) {#if prevUrl}
-    function create_if_block_2$2(ctx) {
+    // (42:4) {#if prevUrl}
+    function create_if_block_3$2(ctx) {
     	var span, dispose;
 
     	return {
     		c: function create() {
     			span = element("span");
     			span.textContent = "Previous";
-    			add_location(span, file$7, 86, 6, 2309);
+    			add_location(span, file$9, 42, 6, 1202);
     			dispose = listen(span, "click", ctx.click_handler_1);
     		},
 
@@ -3344,15 +3728,15 @@ var app = (function () {
     	};
     }
 
-    // (89:4) {#if page}
-    function create_if_block_1$4(ctx) {
+    // (45:4) {#if page}
+    function create_if_block_2$2(ctx) {
     	var b, t;
 
     	return {
     		c: function create() {
     			b = element("b");
     			t = text(ctx.page);
-    			add_location(b, file$7, 89, 6, 2399);
+    			add_location(b, file$9, 45, 6, 1292);
     		},
 
     		m: function mount(target, anchor) {
@@ -3374,15 +3758,15 @@ var app = (function () {
     	};
     }
 
-    // (92:4) {#if nextUrl}
-    function create_if_block$4(ctx) {
+    // (48:4) {#if nextUrl}
+    function create_if_block_1$3(ctx) {
     	var span, dispose;
 
     	return {
     		c: function create() {
     			span = element("span");
     			span.textContent = "Next";
-    			add_location(span, file$7, 92, 6, 2447);
+    			add_location(span, file$9, 48, 6, 1340);
     			dispose = listen(span, "click", ctx.click_handler_2);
     		},
 
@@ -3400,7 +3784,291 @@ var app = (function () {
     	};
     }
 
-    // (1:0) <script>   export let curRoute;   export let session;   export let outbox_collection = {}
+    function create_fragment$9(ctx) {
+    	var ul, t, if_block_anchor, current;
+
+    	var each_value = ctx.posts;
+
+    	var each_blocks = [];
+
+    	for (var i = 0; i < each_value.length; i += 1) {
+    		each_blocks[i] = create_each_block$2(get_each_context$2(ctx, each_value, i));
+    	}
+
+    	const out = i => transition_out(each_blocks[i], 1, 1, () => {
+    		each_blocks[i] = null;
+    	});
+
+    	var if_block = (ctx.homeUrl || ctx.prevUrl || ctx.nextUrl) && create_if_block$5(ctx);
+
+    	return {
+    		c: function create() {
+    			ul = element("ul");
+
+    			for (var i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].c();
+    			}
+
+    			t = space();
+    			if (if_block) if_block.c();
+    			if_block_anchor = empty();
+    			attr(ul, "class", "post-list");
+    			add_location(ul, file$9, 30, 0, 927);
+    		},
+
+    		l: function claim(nodes) {
+    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
+    		},
+
+    		m: function mount(target, anchor) {
+    			insert(target, ul, anchor);
+
+    			for (var i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].m(ul, null);
+    			}
+
+    			insert(target, t, anchor);
+    			if (if_block) if_block.m(target, anchor);
+    			insert(target, if_block_anchor, anchor);
+    			current = true;
+    		},
+
+    		p: function update(changed, ctx) {
+    			if (changed.posts || changed.session) {
+    				each_value = ctx.posts;
+
+    				for (var i = 0; i < each_value.length; i += 1) {
+    					const child_ctx = get_each_context$2(ctx, each_value, i);
+
+    					if (each_blocks[i]) {
+    						each_blocks[i].p(changed, child_ctx);
+    						transition_in(each_blocks[i], 1);
+    					} else {
+    						each_blocks[i] = create_each_block$2(child_ctx);
+    						each_blocks[i].c();
+    						transition_in(each_blocks[i], 1);
+    						each_blocks[i].m(ul, null);
+    					}
+    				}
+
+    				group_outros();
+    				for (i = each_value.length; i < each_blocks.length; i += 1) out(i);
+    				check_outros();
+    			}
+
+    			if (ctx.homeUrl || ctx.prevUrl || ctx.nextUrl) {
+    				if (if_block) {
+    					if_block.p(changed, ctx);
+    				} else {
+    					if_block = create_if_block$5(ctx);
+    					if_block.c();
+    					if_block.m(if_block_anchor.parentNode, if_block_anchor);
+    				}
+    			} else if (if_block) {
+    				if_block.d(1);
+    				if_block = null;
+    			}
+    		},
+
+    		i: function intro(local) {
+    			if (current) return;
+    			for (var i = 0; i < each_value.length; i += 1) transition_in(each_blocks[i]);
+
+    			current = true;
+    		},
+
+    		o: function outro(local) {
+    			each_blocks = each_blocks.filter(Boolean);
+    			for (let i = 0; i < each_blocks.length; i += 1) transition_out(each_blocks[i]);
+
+    			current = false;
+    		},
+
+    		d: function destroy(detaching) {
+    			if (detaching) {
+    				detach(ul);
+    			}
+
+    			destroy_each(each_blocks, detaching);
+
+    			if (detaching) {
+    				detach(t);
+    			}
+
+    			if (if_block) if_block.d(detaching);
+
+    			if (detaching) {
+    				detach(if_block_anchor);
+    			}
+    		}
+    	};
+    }
+
+    function instance$8($$self, $$props, $$invalidate) {
+    	let $session;
+
+    	
+      let { collection, session } = $$props; validate_store(session, 'session'); component_subscribe($$self, session, $$value => { $session = $$value; $$invalidate('$session', $session); });
+
+      let pgi = pubgate_instance;
+
+      // pagination
+      let homeUrl, prevUrl, nextUrl, page;
+
+      const selectPage = async query => {
+        let args = query.split("?");
+        let url = args.shift(); // pull out first argument
+        if (pgi) args.push("cached=1");
+        $$invalidate('collection', collection = await fetchCollection(`${url}?${args.join("&")}`, $session));
+      };
+
+      const updatePageLinks = d => {
+        let pageMatch = /page=(\d+)$/.exec(d.id);
+        $$invalidate('page', page = pageMatch ? parseInt(pageMatch[1]) : 1);
+        $$invalidate('homeUrl', homeUrl = page > 1 && d.partOf ? d.partOf : null);
+        $$invalidate('prevUrl', prevUrl = page > 1 ? `${homeUrl}?page=${page - 1}` : null);
+        $$invalidate('nextUrl', nextUrl = d.next);
+        if (d.first && d.totalItems === d.first.totalItems) $$invalidate('nextUrl', nextUrl = null);
+        return d.first ? d.first.orderedItems : d.orderedItems;
+      };
+
+    	const writable_props = ['collection', 'session'];
+    	Object.keys($$props).forEach(key => {
+    		if (!writable_props.includes(key) && !key.startsWith('$$')) console.warn(`<Collection> was created with unknown prop '${key}'`);
+    	});
+
+    	function click_handler() {
+    		return selectPage(homeUrl);
+    	}
+
+    	function click_handler_1() {
+    		return selectPage(prevUrl);
+    	}
+
+    	function click_handler_2() {
+    		return selectPage(nextUrl);
+    	}
+
+    	$$self.$set = $$props => {
+    		if ('collection' in $$props) $$invalidate('collection', collection = $$props.collection);
+    		if ('session' in $$props) $$invalidate('session', session = $$props.session);
+    	};
+
+    	let posts;
+
+    	$$self.$$.update = ($$dirty = { collection: 1 }) => {
+    		if ($$dirty.collection) { $$invalidate('posts', posts = updatePageLinks(collection)); }
+    	};
+
+    	return {
+    		collection,
+    		session,
+    		homeUrl,
+    		prevUrl,
+    		nextUrl,
+    		page,
+    		selectPage,
+    		posts,
+    		click_handler,
+    		click_handler_1,
+    		click_handler_2
+    	};
+    }
+
+    class Collection extends SvelteComponentDev {
+    	constructor(options) {
+    		super(options);
+    		init(this, options, instance$8, create_fragment$9, safe_not_equal, ["collection", "session"]);
+
+    		const { ctx } = this.$$;
+    		const props = options.props || {};
+    		if (ctx.collection === undefined && !('collection' in props)) {
+    			console.warn("<Collection> was created without expected prop 'collection'");
+    		}
+    		if (ctx.session === undefined && !('session' in props)) {
+    			console.warn("<Collection> was created without expected prop 'session'");
+    		}
+    	}
+
+    	get collection() {
+    		throw new Error("<Collection>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+
+    	set collection(value) {
+    		throw new Error("<Collection>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+
+    	get session() {
+    		throw new Error("<Collection>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+
+    	set session(value) {
+    		throw new Error("<Collection>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+    }
+
+    /* src/components/TimeLine.svelte generated by Svelte v3.7.1 */
+
+    // (1:0) <script>   export let curRoute;   export let session;    import { fetchCollection }
+    function create_catch_block$1(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		i: noop,
+    		o: noop,
+    		d: noop
+    	};
+    }
+
+    // (42:33)    <Collection {collection}
+    function create_then_block$1(ctx) {
+    	var current;
+
+    	var collection = new Collection({
+    		props: {
+    		collection: ctx.collection,
+    		session: ctx.session
+    	},
+    		$$inline: true
+    	});
+
+    	return {
+    		c: function create() {
+    			collection.$$.fragment.c();
+    		},
+
+    		m: function mount(target, anchor) {
+    			mount_component(collection, target, anchor);
+    			current = true;
+    		},
+
+    		p: function update(changed, ctx) {
+    			var collection_changes = {};
+    			if (changed.timeline) collection_changes.collection = ctx.collection;
+    			if (changed.session) collection_changes.session = ctx.session;
+    			collection.$set(collection_changes);
+    		},
+
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(collection.$$.fragment, local);
+
+    			current = true;
+    		},
+
+    		o: function outro(local) {
+    			transition_out(collection.$$.fragment, local);
+    			current = false;
+    		},
+
+    		d: function destroy(detaching) {
+    			destroy_component(collection, detaching);
+    		}
+    	};
+    }
+
+    // (1:0) <script>   export let curRoute;   export let session;    import { fetchCollection }
     function create_pending_block$1(ctx) {
     	return {
     		c: noop,
@@ -3412,7 +4080,7 @@ var app = (function () {
     	};
     }
 
-    function create_fragment$7(ctx) {
+    function create_fragment$a(ctx) {
     	var await_block_anchor, promise, current;
 
     	let info = {
@@ -3422,12 +4090,12 @@ var app = (function () {
     		pending: create_pending_block$1,
     		then: create_then_block$1,
     		catch: create_catch_block$1,
-    		value: 'value',
+    		value: 'collection',
     		error: 'null',
     		blocks: [,,,]
     	};
 
-    	handle_promise(promise = ctx.posts, info);
+    	handle_promise(promise = ctx.timeline, info);
 
     	return {
     		c: function create() {
@@ -3454,7 +4122,7 @@ var app = (function () {
     			ctx = new_ctx;
     			info.ctx = ctx;
 
-    			if (('posts' in changed) && promise !== (promise = ctx.posts) && handle_promise(promise, info)) ; else {
+    			if (('timeline' in changed) && promise !== (promise = ctx.timeline) && handle_promise(promise, info)) ; else {
     				info.block.p(changed, assign(assign({}, ctx), info.resolved));
     			}
     		},
@@ -3486,25 +4154,13 @@ var app = (function () {
     	};
     }
 
-    function instance$6($$self, $$props, $$invalidate) {
+    function instance$9($$self, $$props, $$invalidate) {
     	let $curRoute, $session;
 
     	let { curRoute } = $$props; validate_store(curRoute, 'curRoute'); component_subscribe($$self, curRoute, $$value => { $curRoute = $$value; $$invalidate('$curRoute', $curRoute); });
-      let { session, outbox_collection = {} } = $$props; validate_store(session, 'session'); component_subscribe($$self, session, $$value => { $session = $$value; $$invalidate('$session', $session); });
+      let { session } = $$props; validate_store(session, 'session'); component_subscribe($$self, session, $$value => { $session = $$value; $$invalidate('$session', $session); });
 
       let pgi = pubgate_instance;
-
-      const fetchCollection = function(path, session = {}, inbox = false) {
-        let headers = {
-          Accept: "application/activity+json",
-        };
-        if (session.user && inbox) {
-          headers["Authorization"] = "Bearer " + session.token;
-        }
-        return fetch(path, { headers })
-          .then(d => d.json())
-          .then(d => updatePageLinks(d));
-      };
 
       const getTimeline = function(tab, session) {
         switch (tab) {
@@ -3525,82 +4181,34 @@ var app = (function () {
             return pgi
               ? fetchCollection(session.user.outbox + "?cached=1")
               : fetchCollection(session.user.outbox);
-          case "/search":
-            return outbox_collection.orderedItems;
           default:
             return [];
         }
       };
 
-      // pagination
-
-      let homeUrl, prevUrl, nextUrl, page;
-
-      const selectPage = query => {
-        let args = query.split("?");
-        let url = args.shift(); // pull out first argument
-        if (pgi) args.push("cached=1");
-        $$invalidate('posts', posts = fetchCollection(url + "?" + args.join("&"), session));
-      };
-
-      const updatePageLinks = d => {
-        let pageMatch = /page=(\d+)$/.exec(d.id);
-        $$invalidate('page', page = pageMatch ? parseInt(pageMatch[1]) : 1);
-        $$invalidate('homeUrl', homeUrl = page > 1 && d.partOf ? d.partOf : null);
-        $$invalidate('prevUrl', prevUrl = page > 1 ? `${homeUrl}?page=${page - 1}` : null);
-        $$invalidate('nextUrl', nextUrl = d.next);
-        return d.first ? d.first.orderedItems : d.orderedItems;
-      };
-
-    	const writable_props = ['curRoute', 'session', 'outbox_collection'];
+    	const writable_props = ['curRoute', 'session'];
     	Object.keys($$props).forEach(key => {
     		if (!writable_props.includes(key) && !key.startsWith('$$')) console.warn(`<TimeLine> was created with unknown prop '${key}'`);
     	});
 
-    	function click_handler() {
-    		return selectPage(homeUrl);
-    	}
-
-    	function click_handler_1() {
-    		return selectPage(prevUrl);
-    	}
-
-    	function click_handler_2() {
-    		return selectPage(nextUrl);
-    	}
-
     	$$self.$set = $$props => {
     		if ('curRoute' in $$props) $$invalidate('curRoute', curRoute = $$props.curRoute);
     		if ('session' in $$props) $$invalidate('session', session = $$props.session);
-    		if ('outbox_collection' in $$props) $$invalidate('outbox_collection', outbox_collection = $$props.outbox_collection);
     	};
 
-    	let posts;
+    	let timeline;
 
     	$$self.$$.update = ($$dirty = { $curRoute: 1, $session: 1 }) => {
-    		if ($$dirty.$curRoute || $$dirty.$session) { $$invalidate('posts', posts = getTimeline($curRoute, $session)); }
+    		if ($$dirty.$curRoute || $$dirty.$session) { $$invalidate('timeline', timeline = getTimeline($curRoute, $session)); }
     	};
 
-    	return {
-    		curRoute,
-    		session,
-    		outbox_collection,
-    		homeUrl,
-    		prevUrl,
-    		nextUrl,
-    		page,
-    		selectPage,
-    		posts,
-    		click_handler,
-    		click_handler_1,
-    		click_handler_2
-    	};
+    	return { curRoute, session, timeline };
     }
 
     class TimeLine extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$6, create_fragment$7, safe_not_equal, ["curRoute", "session", "outbox_collection"]);
+    		init(this, options, instance$9, create_fragment$a, safe_not_equal, ["curRoute", "session"]);
 
     		const { ctx } = this.$$;
     		const props = options.props || {};
@@ -3627,90 +4235,19 @@ var app = (function () {
     	set session(value) {
     		throw new Error("<TimeLine>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
     	}
-
-    	get outbox_collection() {
-    		throw new Error("<TimeLine>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set outbox_collection(value) {
-    		throw new Error("<TimeLine>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    const subscriber_queue = [];
-    /**
-     * Creates a `Readable` store that allows reading by subscription.
-     * @param value initial value
-     * @param {StartStopNotifier}start start and stop notifications for subscriptions
-     */
-    function readable(value, start) {
-        return {
-            subscribe: writable(value, start).subscribe,
-        };
-    }
-    /**
-     * Create a `Writable` store that allows both updating and reading by subscription.
-     * @param {*=}value initial value
-     * @param {StartStopNotifier=}start start and stop notifications for subscriptions
-     */
-    function writable(value, start = noop) {
-        let stop;
-        const subscribers = [];
-        function set(new_value) {
-            if (safe_not_equal(value, new_value)) {
-                value = new_value;
-                if (stop) { // store is ready
-                    const run_queue = !subscriber_queue.length;
-                    for (let i = 0; i < subscribers.length; i += 1) {
-                        const s = subscribers[i];
-                        s[1]();
-                        subscriber_queue.push(s, value);
-                    }
-                    if (run_queue) {
-                        for (let i = 0; i < subscriber_queue.length; i += 2) {
-                            subscriber_queue[i][0](subscriber_queue[i + 1]);
-                        }
-                        subscriber_queue.length = 0;
-                    }
-                }
-            }
-        }
-        function update(fn) {
-            set(fn(value));
-        }
-        function subscribe(run, invalidate = noop) {
-            const subscriber = [run, invalidate];
-            subscribers.push(subscriber);
-            if (subscribers.length === 1) {
-                stop = start(set) || noop;
-            }
-            run(value);
-            return () => {
-                const index = subscribers.indexOf(subscriber);
-                if (index !== -1) {
-                    subscribers.splice(index, 1);
-                }
-                if (subscribers.length === 0) {
-                    stop();
-                    stop = null;
-                }
-            };
-        }
-        return { set, update, subscribe };
     }
 
     /* src/components/Search.svelte generated by Svelte v3.7.1 */
-    const { console: console_1$1 } = globals;
 
-    const file$8 = "src/components/Search.svelte";
+    const file$a = "src/components/Search.svelte";
 
-    // (143:0) {#if profile}
-    function create_if_block_1$5(ctx) {
+    // (130:0) {#if profile}
+    function create_if_block_1$4(ctx) {
     	var h2, t0_value = ctx.profile.name, t0, t1, button, t2, t3_value = ctx.profile.summary, t3, t4, if_block1_anchor, current, dispose;
 
     	function select_block_type(ctx) {
     		if (ctx.following) return create_if_block_3$3;
-    		return create_else_block$3;
+    		return create_else_block$2;
     	}
 
     	var current_block_type = select_block_type(ctx);
@@ -3731,8 +4268,8 @@ var app = (function () {
     			if (if_block1) if_block1.c();
     			if_block1_anchor = empty();
     			attr(button, "class", "btn btn-sm pull-xs-right btn-info");
-    			add_location(button, file$8, 145, 4, 4094);
-    			add_location(h2, file$8, 143, 2, 4066);
+    			add_location(button, file$a, 132, 4, 3418);
+    			add_location(h2, file$a, 130, 2, 3390);
     			dispose = listen(button, "click", ctx.follow);
     		},
 
@@ -3822,8 +4359,8 @@ var app = (function () {
     	};
     }
 
-    // (147:29) {:else}
-    function create_else_block$3(ctx) {
+    // (134:29) {:else}
+    function create_else_block$2(ctx) {
     	var t;
 
     	return {
@@ -3843,7 +4380,7 @@ var app = (function () {
     	};
     }
 
-    // (147:6) {#if following}
+    // (134:6) {#if following}
     function create_if_block_3$3(ctx) {
     	var t;
 
@@ -3864,57 +4401,55 @@ var app = (function () {
     	};
     }
 
-    // (151:2) {#if outbox_collection}
+    // (138:2) {#if outbox_collection}
     function create_if_block_2$3(ctx) {
     	var current;
 
-    	var timeline = new TimeLine({
+    	var collection = new Collection({
     		props: {
-    		curRoute: ctx.timelineRoute,
     		session: ctx.session,
-    		outbox_collection: ctx.outbox_collection
+    		collection: ctx.outbox_collection
     	},
     		$$inline: true
     	});
 
     	return {
     		c: function create() {
-    			timeline.$$.fragment.c();
+    			collection.$$.fragment.c();
     		},
 
     		m: function mount(target, anchor) {
-    			mount_component(timeline, target, anchor);
+    			mount_component(collection, target, anchor);
     			current = true;
     		},
 
     		p: function update(changed, ctx) {
-    			var timeline_changes = {};
-    			if (changed.timelineRoute) timeline_changes.curRoute = ctx.timelineRoute;
-    			if (changed.session) timeline_changes.session = ctx.session;
-    			if (changed.outbox_collection) timeline_changes.outbox_collection = ctx.outbox_collection;
-    			timeline.$set(timeline_changes);
+    			var collection_changes = {};
+    			if (changed.session) collection_changes.session = ctx.session;
+    			if (changed.outbox_collection) collection_changes.collection = ctx.outbox_collection;
+    			collection.$set(collection_changes);
     		},
 
     		i: function intro(local) {
     			if (current) return;
-    			transition_in(timeline.$$.fragment, local);
+    			transition_in(collection.$$.fragment, local);
 
     			current = true;
     		},
 
     		o: function outro(local) {
-    			transition_out(timeline.$$.fragment, local);
+    			transition_out(collection.$$.fragment, local);
     			current = false;
     		},
 
     		d: function destroy(detaching) {
-    			destroy_component(timeline, detaching);
+    			destroy_component(collection, detaching);
     		}
     	};
     }
 
-    // (156:0) {#if typeof loadedPost === 'object'}
-    function create_if_block$5(ctx) {
+    // (143:0) {#if typeof loadedPost === 'object'}
+    function create_if_block$6(ctx) {
     	var current;
 
     	var post = new Post({
@@ -3960,12 +4495,12 @@ var app = (function () {
     	};
     }
 
-    function create_fragment$8(ctx) {
+    function create_fragment$b(ctx) {
     	var br0, t0, form0, fieldset0, input0, t1, button0, t2, button0_disabled_value, t3, br1, t4, br2, t5, form1, fieldset1, input1, t6, button1, t7, button1_disabled_value, t8, br3, t9, br4, t10, t11, t12, p, t13, current, dispose;
 
-    	var if_block0 = (ctx.profile) && create_if_block_1$5(ctx);
+    	var if_block0 = (ctx.profile) && create_if_block_1$4(ctx);
 
-    	var if_block1 = (typeof ctx.loadedPost === 'object') && create_if_block$5(ctx);
+    	var if_block1 = (typeof ctx.loadedPost === 'object') && create_if_block$6(ctx);
 
     	return {
     		c: function create() {
@@ -3999,35 +4534,35 @@ var app = (function () {
     			t12 = space();
     			p = element("p");
     			t13 = text(ctx.error);
-    			add_location(br0, file$8, 104, 0, 3240);
+    			add_location(br0, file$a, 91, 0, 2564);
     			attr(input0, "class", "form-control form-control-lg");
     			attr(input0, "type", "text");
     			attr(input0, "placeholder", "Search format: username@domain");
-    			add_location(input0, file$8, 108, 4, 3340);
+    			add_location(input0, file$a, 95, 4, 2664);
     			attr(fieldset0, "class", "form-group");
-    			add_location(fieldset0, file$8, 107, 2, 3306);
+    			add_location(fieldset0, file$a, 94, 2, 2630);
     			attr(button0, "class", "btn btn-sm pull-xs-right btn-info");
     			attr(button0, "type", "submit");
     			button0.disabled = button0_disabled_value = !ctx.username;
-    			add_location(button0, file$8, 114, 2, 3506);
-    			add_location(form0, file$8, 106, 0, 3263);
-    			add_location(br1, file$8, 121, 0, 3640);
-    			add_location(br2, file$8, 122, 0, 3647);
+    			add_location(button0, file$a, 101, 2, 2830);
+    			add_location(form0, file$a, 93, 0, 2587);
+    			add_location(br1, file$a, 108, 0, 2964);
+    			add_location(br2, file$a, 109, 0, 2971);
     			attr(input1, "class", "form-control form-control-lg");
     			attr(input1, "type", "text");
     			attr(input1, "placeholder", "Copy a link here");
-    			add_location(input1, file$8, 126, 4, 3751);
+    			add_location(input1, file$a, 113, 4, 3075);
     			attr(fieldset1, "class", "form-group");
-    			add_location(fieldset1, file$8, 125, 2, 3717);
+    			add_location(fieldset1, file$a, 112, 2, 3041);
     			attr(button1, "class", "btn btn-sm pull-xs-right btn-info");
     			attr(button1, "type", "submit");
     			button1.disabled = button1_disabled_value = !ctx.postLink;
-    			add_location(button1, file$8, 132, 2, 3903);
-    			add_location(form1, file$8, 124, 0, 3672);
-    			add_location(br3, file$8, 139, 0, 4035);
-    			add_location(br4, file$8, 140, 0, 4042);
+    			add_location(button1, file$a, 119, 2, 3227);
+    			add_location(form1, file$a, 111, 0, 2996);
+    			add_location(br3, file$a, 126, 0, 3359);
+    			add_location(br4, file$a, 127, 0, 3366);
     			attr(p, "class", "text-danger");
-    			add_location(p, file$8, 159, 0, 4449);
+    			add_location(p, file$a, 146, 0, 3761);
 
     			dispose = [
     				listen(input0, "input", ctx.input0_input_handler),
@@ -4099,7 +4634,7 @@ var app = (function () {
     					if_block0.p(changed, ctx);
     					transition_in(if_block0, 1);
     				} else {
-    					if_block0 = create_if_block_1$5(ctx);
+    					if_block0 = create_if_block_1$4(ctx);
     					if_block0.c();
     					transition_in(if_block0, 1);
     					if_block0.m(t11.parentNode, t11);
@@ -4117,7 +4652,7 @@ var app = (function () {
     					if_block1.p(changed, ctx);
     					transition_in(if_block1, 1);
     				} else {
-    					if_block1 = create_if_block$5(ctx);
+    					if_block1 = create_if_block$6(ctx);
     					if_block1.c();
     					transition_in(if_block1, 1);
     					if_block1.m(t12.parentNode, t12);
@@ -4184,12 +4719,10 @@ var app = (function () {
     	};
     }
 
-    function instance$7($$self, $$props, $$invalidate) {
+    function instance$a($$self, $$props, $$invalidate) {
     	let $session;
 
     	let { session, curRoute } = $$props; validate_store(session, 'session'); component_subscribe($$self, session, $$value => { $session = $$value; $$invalidate('$session', $session); });
-      const protocol = base_url.match(/^https/) ? "https" : "http";
-      const timelineRoute = readable("/search");
 
       // search user
       let username = "";
@@ -4202,50 +4735,39 @@ var app = (function () {
       let postLink = "";
       let error = "";
 
-      async function search(event) {
+      const search = async event => {
         $$invalidate('error', error = "");
         $$invalidate('profile', profile = null);
         $$invalidate('outbox_collection', outbox_collection = null);
-        let pair = username.split("@");
+        let name, domain;
+        if (username.match(/^http/)) {
+          $$invalidate('error', error = "we could do the request for you, but we don't");
+          return;
+        }
+
+        const pair = username.split("@");
         if (pair.length !== 2) {
           var $$result = (error = "Use this format: username@domain"); $$invalidate('error', error); return $$result;
         }
-        let profile_url = `${protocol}://${pair[1]}/@${pair[0]}`;
+        name = pair[0];
+        domain = pair[1];
 
-        if (pubgate_instance) {
-          console.log("search", profile_url);
-          const res = await fetch(base_url + "/proxy", {
-            method: "POST",
-            body: JSON.stringify({ url: profile_url }),
-          }).then(d => d.json());
-          if (res.error) {
-            var $$result = (error = JSON.stringify(res.error.strerror || res.error)); $$invalidate('error', error); return $$result;
-          }
-          $$invalidate('profile', profile = res);
 
-          const body = JSON.stringify({ url: profile.outbox });
-          const req = { method: "POST", body };
-          const resp = await fetch(base_url + "/proxy", req).then(d => d.json());
-          if (!resp) {
-            var $$result = (error = "Failed to fetch timeline."); $$invalidate('error', error); return $$result;
-          }
+        const res = await handleResult(findUser(name, domain));
+        if (!res.outbox) return;
+        $$invalidate('profile', profile = res);
 
-          $$invalidate('outbox_collection', outbox_collection =
-            typeof resp.first === "string"
-              ? await fetchTimeline(resp.first)
-              : resp.first);
-        } else {
-          const headers = { Accept: "application/activity+json" };
-          const response = await fetch(profile_url, headers).then(d => d.json());
-          if (profile.outbox) $$invalidate('outbox_collection', outbox_collection = profile.outbox);
-        }
-      }
+        $$invalidate('outbox_collection', outbox_collection =
+          typeof profile.outbox === "string"
+            ? await handleResult(fetchOutbox(profile.outbox))
+            : profile.outbox);
+      };
 
-      const fetchTimeline = async url => {
-        return await fetch(base_url + "/proxy", {
-          method: "POST",
-          body: JSON.stringify({ url: res.first }),
-        }).then(d => d.json());
+      const handleResult = async promise => {
+        const result = await promise;
+        if (!result) $$invalidate('error', error = "Empty response.");
+        else if (result.error) $$invalidate('error', error = result.error);
+        return result;
       };
 
       const follow = async event => {
@@ -4285,7 +4807,7 @@ var app = (function () {
 
     	const writable_props = ['session', 'curRoute'];
     	Object.keys($$props).forEach(key => {
-    		if (!writable_props.includes(key) && !key.startsWith('$$')) console_1$1.warn(`<Search> was created with unknown prop '${key}'`);
+    		if (!writable_props.includes(key) && !key.startsWith('$$')) console.warn(`<Search> was created with unknown prop '${key}'`);
     	});
 
     	function input0_input_handler() {
@@ -4306,7 +4828,6 @@ var app = (function () {
     	return {
     		session,
     		curRoute,
-    		timelineRoute,
     		username,
     		profile,
     		following,
@@ -4325,15 +4846,15 @@ var app = (function () {
     class Search extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$7, create_fragment$8, safe_not_equal, ["session", "curRoute"]);
+    		init(this, options, instance$a, create_fragment$b, safe_not_equal, ["session", "curRoute"]);
 
     		const { ctx } = this.$$;
     		const props = options.props || {};
     		if (ctx.session === undefined && !('session' in props)) {
-    			console_1$1.warn("<Search> was created without expected prop 'session'");
+    			console.warn("<Search> was created without expected prop 'session'");
     		}
     		if (ctx.curRoute === undefined && !('curRoute' in props)) {
-    			console_1$1.warn("<Search> was created without expected prop 'curRoute'");
+    			console.warn("<Search> was created without expected prop 'curRoute'");
     		}
     	}
 
@@ -4355,12 +4876,12 @@ var app = (function () {
     }
 
     /* src/components/Profile.svelte generated by Svelte v3.7.1 */
-    const { console: console_1$2 } = globals;
+    const { console: console_1$1 } = globals;
 
-    const file$9 = "src/components/Profile.svelte";
+    const file$b = "src/components/Profile.svelte";
 
     // (82:0) {:else}
-    function create_else_block$4(ctx) {
+    function create_else_block$3(ctx) {
     	var div0, t1, form0, fieldset0, input0, t2, fieldset1, input1, t3, button0, t4, button0_disabled_value, t5, br0, t6, div1, t7, t8, br1, t9, br2, t10, form1, fieldset2, input2, t11, fieldset3, input3, t12, fieldset4, textarea, t13, fieldset5, input4, t14, fieldset6, input5, t15, button1, t16, button1_disabled_value, dispose;
 
     	return {
@@ -4406,64 +4927,64 @@ var app = (function () {
     			button1 = element("button");
     			t16 = text("Register");
     			attr(div0, "class", "form-group");
-    			add_location(div0, file$9, 82, 2, 1870);
+    			add_location(div0, file$b, 82, 2, 1870);
     			attr(input0, "class", "form-control form-control-lg");
     			attr(input0, "type", "username");
     			attr(input0, "placeholder", "Username");
-    			add_location(input0, file$9, 88, 6, 2049);
+    			add_location(input0, file$b, 88, 6, 2049);
     			attr(fieldset0, "class", "form-group");
-    			add_location(fieldset0, file$9, 87, 4, 2013);
+    			add_location(fieldset0, file$b, 87, 4, 2013);
     			attr(input1, "class", "form-control form-control-lg");
     			attr(input1, "type", "password");
     			attr(input1, "placeholder", "Password");
-    			add_location(input1, file$9, 95, 6, 2245);
+    			add_location(input1, file$b, 95, 6, 2245);
     			attr(fieldset1, "class", "form-group");
-    			add_location(fieldset1, file$9, 94, 4, 2209);
+    			add_location(fieldset1, file$b, 94, 4, 2209);
     			attr(button0, "class", "btn btn-sm pull-xs-right btn-info");
     			attr(button0, "type", "submit");
     			button0.disabled = button0_disabled_value = !ctx.username || !ctx.password;
-    			add_location(button0, file$9, 101, 4, 2405);
-    			add_location(form0, file$9, 86, 2, 1969);
-    			add_location(br0, file$9, 108, 2, 2562);
+    			add_location(button0, file$b, 101, 4, 2405);
+    			add_location(form0, file$b, 86, 2, 1969);
+    			add_location(br0, file$b, 108, 2, 2562);
     			attr(div1, "class", "text-danger");
-    			add_location(div1, file$9, 109, 2, 2571);
-    			add_location(br1, file$9, 110, 2, 2612);
-    			add_location(br2, file$9, 112, 2, 2652);
+    			add_location(div1, file$b, 109, 2, 2571);
+    			add_location(br1, file$b, 110, 2, 2612);
+    			add_location(br2, file$b, 112, 2, 2652);
     			attr(input2, "class", "form-control form-control-lg");
     			attr(input2, "type", "text");
     			attr(input2, "placeholder", "Username");
-    			add_location(input2, file$9, 115, 6, 2744);
+    			add_location(input2, file$b, 115, 6, 2744);
     			attr(fieldset2, "class", "form-group");
-    			add_location(fieldset2, file$9, 114, 4, 2708);
+    			add_location(fieldset2, file$b, 114, 4, 2708);
     			attr(input3, "class", "form-control form-control-lg");
     			attr(input3, "type", "password");
     			attr(input3, "placeholder", "Password");
-    			add_location(input3, file$9, 122, 6, 2936);
+    			add_location(input3, file$b, 122, 6, 2936);
     			attr(fieldset3, "class", "form-group");
-    			add_location(fieldset3, file$9, 121, 4, 2900);
+    			add_location(fieldset3, file$b, 121, 4, 2900);
     			attr(textarea, "class", "form-control");
     			attr(textarea, "rows", "8");
     			attr(textarea, "placeholder", "Profile Description");
-    			add_location(textarea, file$9, 129, 6, 3132);
+    			add_location(textarea, file$b, 129, 6, 3132);
     			attr(fieldset4, "class", "form-group");
-    			add_location(fieldset4, file$9, 128, 4, 3096);
+    			add_location(fieldset4, file$b, 128, 4, 3096);
     			attr(input4, "class", "form-control form-control-lg");
     			attr(input4, "type", "text");
     			attr(input4, "placeholder", "Avatar URL");
-    			add_location(input4, file$9, 136, 6, 3322);
+    			add_location(input4, file$b, 136, 6, 3322);
     			attr(fieldset5, "class", "form-group");
-    			add_location(fieldset5, file$9, 135, 4, 3286);
+    			add_location(fieldset5, file$b, 135, 4, 3286);
     			attr(input5, "class", "form-control form-control-lg");
     			attr(input5, "type", "text");
     			attr(input5, "placeholder", "Invite code");
-    			add_location(input5, file$9, 143, 6, 3514);
+    			add_location(input5, file$b, 143, 6, 3514);
     			attr(fieldset6, "class", "form-group");
-    			add_location(fieldset6, file$9, 142, 4, 3478);
+    			add_location(fieldset6, file$b, 142, 4, 3478);
     			attr(button1, "class", "btn btn-sm pull-xs-right btn-info");
     			attr(button1, "type", "submit");
     			button1.disabled = button1_disabled_value = !ctx.username || !ctx.password;
-    			add_location(button1, file$9, 150, 4, 3672);
-    			add_location(form1, file$9, 113, 2, 2661);
+    			add_location(button1, file$b, 150, 4, 3672);
+    			add_location(form1, file$b, 113, 2, 2661);
 
     			dispose = [
     				listen(input0, "input", ctx.input0_input_handler),
@@ -4590,7 +5111,7 @@ var app = (function () {
     }
 
     // (73:0) {#if $session.user}
-    function create_if_block$6(ctx) {
+    function create_if_block$7(ctx) {
     	var h2, a, t0_value = ctx.$session.user.name, t0, a_href_value, t1, button, t3, t4_value = ctx.$session.user.summary, t4, t5, current, dispose;
 
     	var timeline = new TimeLine({
@@ -4614,10 +5135,10 @@ var app = (function () {
     			t5 = space();
     			timeline.$$.fragment.c();
     			attr(a, "href", a_href_value = ctx.$session.user.url);
-    			add_location(a, file$9, 74, 4, 1637);
+    			add_location(a, file$b, 74, 4, 1637);
     			attr(button, "class", "btn btn-sm pull-xs-right btn-info");
-    			add_location(button, file$9, 75, 4, 1694);
-    			add_location(h2, file$9, 73, 2, 1628);
+    			add_location(button, file$b, 75, 4, 1694);
+    			add_location(h2, file$b, 73, 2, 1628);
     			dispose = listen(button, "click", ctx.logout);
     		},
 
@@ -4680,12 +5201,12 @@ var app = (function () {
     	};
     }
 
-    function create_fragment$9(ctx) {
+    function create_fragment$c(ctx) {
     	var current_block_type_index, if_block, if_block_anchor, current;
 
     	var if_block_creators = [
-    		create_if_block$6,
-    		create_else_block$4
+    		create_if_block$7,
+    		create_else_block$3
     	];
 
     	var if_blocks = [];
@@ -4757,7 +5278,7 @@ var app = (function () {
     	};
     }
 
-    function instance$8($$self, $$props, $$invalidate) {
+    function instance$b($$self, $$props, $$invalidate) {
     	let $session;
 
     	
@@ -4826,7 +5347,7 @@ var app = (function () {
 
     	const writable_props = ['curRoute', 'session'];
     	Object.keys($$props).forEach(key => {
-    		if (!writable_props.includes(key) && !key.startsWith('$$')) console_1$2.warn(`<Profile> was created with unknown prop '${key}'`);
+    		if (!writable_props.includes(key) && !key.startsWith('$$')) console_1$1.warn(`<Profile> was created with unknown prop '${key}'`);
     	});
 
     	function input0_input_handler() {
@@ -4895,15 +5416,15 @@ var app = (function () {
     class Profile extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$8, create_fragment$9, safe_not_equal, ["curRoute", "session"]);
+    		init(this, options, instance$b, create_fragment$c, safe_not_equal, ["curRoute", "session"]);
 
     		const { ctx } = this.$$;
     		const props = options.props || {};
     		if (ctx.curRoute === undefined && !('curRoute' in props)) {
-    			console_1$2.warn("<Profile> was created without expected prop 'curRoute'");
+    			console_1$1.warn("<Profile> was created without expected prop 'curRoute'");
     		}
     		if (ctx.session === undefined && !('session' in props)) {
-    			console_1$2.warn("<Profile> was created without expected prop 'session'");
+    			console_1$1.warn("<Profile> was created without expected prop 'session'");
     		}
     	}
 
@@ -4926,7 +5447,7 @@ var app = (function () {
 
     /* src/components/About.svelte generated by Svelte v3.7.1 */
 
-    function create_fragment$a(ctx) {
+    function create_fragment$d(ctx) {
     	var t;
 
     	return {
@@ -4957,17 +5478,17 @@ var app = (function () {
     class About extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, null, create_fragment$a, safe_not_equal, []);
+    		init(this, options, null, create_fragment$d, safe_not_equal, []);
     	}
     }
 
     /* src/components/User.svelte generated by Svelte v3.7.1 */
-    const { console: console_1$3 } = globals;
+    const { console: console_1$2 } = globals;
 
-    const file$a = "src/components/User.svelte";
+    const file$c = "src/components/User.svelte";
 
-    // (1:0) <script>   import TimeLine from "./TimeLine.svelte";   import { readable }
-    function create_catch_block_4(ctx) {
+    // (1:0) <script>   import Collection from "./Collection.svelte";    export let curRoute;   export let session;    const username = $curRoute.match(/^\/@([^\/]+)$/)[1];   let outbox, followers, following, liked;    let headers = { Accept: "application/activity+json" }
+    function create_catch_block_4$1(ctx) {
     	return {
     		c: noop,
     		m: noop,
@@ -4978,7 +5499,7 @@ var app = (function () {
     	};
     }
 
-    // (40:0) {:then user}
+    // (35:0) {:then user}
     function create_then_block$2(ctx) {
     	var h2, a0, t0_value = ctx.user.name, t0, a0_href_value, t1, p0, a1, t2, a1_href_value, t3, a2, t4, a2_href_value, t5, a3, t6, a3_href_value, t7, a4, t8, a4_href_value, t9, p1, t10_value = ctx.user.summary, t10, t11, promise, t12, promise_1, t13, promise_2, t14, await_block3_anchor, promise_3, current;
 
@@ -4986,10 +5507,10 @@ var app = (function () {
     		ctx,
     		current: null,
     		token: null,
-    		pending: create_pending_block_4,
-    		then: create_then_block_4,
-    		catch: create_catch_block_3,
-    		value: 'outbox_collection',
+    		pending: create_pending_block_4$1,
+    		then: create_then_block_4$1,
+    		catch: create_catch_block_3$1,
+    		value: 'collection',
     		error: 'null',
     		blocks: [,,,]
     	};
@@ -5000,10 +5521,10 @@ var app = (function () {
     		ctx,
     		current: null,
     		token: null,
-    		pending: create_pending_block_3,
-    		then: create_then_block_3,
-    		catch: create_catch_block_2,
-    		value: 'outbox_collection',
+    		pending: create_pending_block_3$1,
+    		then: create_then_block_3$1,
+    		catch: create_catch_block_2$1,
+    		value: 'collection',
     		error: 'null',
     		blocks: [,,,]
     	};
@@ -5014,10 +5535,10 @@ var app = (function () {
     		ctx,
     		current: null,
     		token: null,
-    		pending: create_pending_block_2,
-    		then: create_then_block_2,
-    		catch: create_catch_block_1,
-    		value: 'outbox_collection',
+    		pending: create_pending_block_2$1,
+    		then: create_then_block_2$1,
+    		catch: create_catch_block_1$1,
+    		value: 'collection',
     		error: 'null',
     		blocks: [,,,]
     	};
@@ -5028,15 +5549,15 @@ var app = (function () {
     		ctx,
     		current: null,
     		token: null,
-    		pending: create_pending_block_1,
-    		then: create_then_block_1,
+    		pending: create_pending_block_1$1,
+    		then: create_then_block_1$1,
     		catch: create_catch_block$2,
-    		value: 'outbox_collection',
+    		value: 'collection',
     		error: 'null',
     		blocks: [,,,]
     	};
 
-    	handle_promise(promise_3 = ctx.timeline, info_3);
+    	handle_promise(promise_3 = ctx.outbox, info_3);
 
     	return {
     		c: function create() {
@@ -5076,18 +5597,18 @@ var app = (function () {
 
     			info_3.block.c();
     			attr(a0, "href", a0_href_value = ctx.user.url);
-    			add_location(a0, file$a, 41, 4, 1051);
-    			add_location(h2, file$a, 40, 2, 1042);
+    			add_location(a0, file$c, 36, 4, 911);
+    			add_location(h2, file$c, 35, 2, 902);
     			attr(a1, "href", a1_href_value = ctx.user.followers);
-    			add_location(a1, file$a, 44, 4, 1104);
+    			add_location(a1, file$c, 39, 4, 964);
     			attr(a2, "href", a2_href_value = ctx.user.following);
-    			add_location(a2, file$a, 46, 4, 1153);
+    			add_location(a2, file$c, 41, 4, 1013);
     			attr(a3, "href", a3_href_value = ctx.user.outbox);
-    			add_location(a3, file$a, 48, 4, 1202);
+    			add_location(a3, file$c, 43, 4, 1062);
     			attr(a4, "href", a4_href_value = ctx.user.liked);
-    			add_location(a4, file$a, 50, 4, 1247);
-    			add_location(p0, file$a, 43, 2, 1096);
-    			add_location(p1, file$a, 53, 2, 1288);
+    			add_location(a4, file$c, 45, 4, 1107);
+    			add_location(p0, file$c, 38, 2, 956);
+    			add_location(p1, file$c, 48, 2, 1148);
     		},
 
     		m: function mount(target, anchor) {
@@ -5188,7 +5709,7 @@ var app = (function () {
 
     			info_3.ctx = ctx;
 
-    			if (('timeline' in changed) && promise_3 !== (promise_3 = ctx.timeline) && handle_promise(promise_3, info_3)) ; else {
+    			if (('outbox' in changed) && promise_3 !== (promise_3 = ctx.outbox) && handle_promise(promise_3, info_3)) ; else {
     				info_3.block.p(changed, assign(assign({}, ctx), info_3.resolved));
     			}
     		},
@@ -5268,8 +5789,8 @@ var app = (function () {
     	};
     }
 
-    // (1:0) <script>   import TimeLine from "./TimeLine.svelte";   import { readable }
-    function create_catch_block_3(ctx) {
+    // (1:0) <script>   import Collection from "./Collection.svelte";    export let curRoute;   export let session;    const username = $curRoute.match(/^\/@([^\/]+)$/)[1];   let outbox, followers, following, liked;    let headers = { Accept: "application/activity+json" }
+    function create_catch_block_3$1(ctx) {
     	return {
     		c: noop,
     		m: noop,
@@ -5280,11 +5801,11 @@ var app = (function () {
     	};
     }
 
-    // (58:2) {:then outbox_collection}
-    function create_then_block_4(ctx) {
+    // (51:36)      {#if collection.length}
+    function create_then_block_4$1(ctx) {
     	var if_block_anchor, current;
 
-    	var if_block = (ctx.outbox_collection.length) && create_if_block_2$4(ctx);
+    	var if_block = (ctx.collection.length) && create_if_block_2$4(ctx);
 
     	return {
     		c: function create() {
@@ -5299,7 +5820,7 @@ var app = (function () {
     		},
 
     		p: function update(changed, ctx) {
-    			if (ctx.outbox_collection.length) {
+    			if (ctx.collection.length) {
     				if (if_block) {
     					if_block.p(changed, ctx);
     					transition_in(if_block, 1);
@@ -5339,15 +5860,14 @@ var app = (function () {
     	};
     }
 
-    // (59:4) {#if outbox_collection.length}
+    // (52:4) {#if collection.length}
     function create_if_block_2$4(ctx) {
     	var h3, t_1, current;
 
-    	var timeline_1 = new TimeLine({
+    	var collection = new Collection({
     		props: {
-    		curRoute: ctx.timelineRoute,
     		session: ctx.session,
-    		outbox_collection: ctx.outbox_collection
+    		collection: ctx.collection
     	},
     		$$inline: true
     	});
@@ -5357,34 +5877,33 @@ var app = (function () {
     			h3 = element("h3");
     			h3.textContent = "Followers";
     			t_1 = space();
-    			timeline_1.$$.fragment.c();
-    			add_location(h3, file$a, 59, 6, 1426);
+    			collection.$$.fragment.c();
+    			add_location(h3, file$c, 52, 6, 1242);
     		},
 
     		m: function mount(target, anchor) {
     			insert(target, h3, anchor);
     			insert(target, t_1, anchor);
-    			mount_component(timeline_1, target, anchor);
+    			mount_component(collection, target, anchor);
     			current = true;
     		},
 
     		p: function update(changed, ctx) {
-    			var timeline_1_changes = {};
-    			if (changed.timelineRoute) timeline_1_changes.curRoute = ctx.timelineRoute;
-    			if (changed.session) timeline_1_changes.session = ctx.session;
-    			if (changed.followers) timeline_1_changes.outbox_collection = ctx.outbox_collection;
-    			timeline_1.$set(timeline_1_changes);
+    			var collection_changes = {};
+    			if (changed.session) collection_changes.session = ctx.session;
+    			if (changed.followers) collection_changes.collection = ctx.collection;
+    			collection.$set(collection_changes);
     		},
 
     		i: function intro(local) {
     			if (current) return;
-    			transition_in(timeline_1.$$.fragment, local);
+    			transition_in(collection.$$.fragment, local);
 
     			current = true;
     		},
 
     		o: function outro(local) {
-    			transition_out(timeline_1.$$.fragment, local);
+    			transition_out(collection.$$.fragment, local);
     			current = false;
     		},
 
@@ -5394,38 +5913,13 @@ var app = (function () {
     				detach(t_1);
     			}
 
-    			destroy_component(timeline_1, detaching);
+    			destroy_component(collection, detaching);
     		}
     	};
     }
 
-    // (56:20)      Loading followers ..   {:then outbox_collection}
-    function create_pending_block_4(ctx) {
-    	var t;
-
-    	return {
-    		c: function create() {
-    			t = text("Loading followers ..");
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, t, anchor);
-    		},
-
-    		p: noop,
-    		i: noop,
-    		o: noop,
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(t);
-    			}
-    		}
-    	};
-    }
-
-    // (1:0) <script>   import TimeLine from "./TimeLine.svelte";   import { readable }
-    function create_catch_block_2(ctx) {
+    // (1:0) <script>   import Collection from "./Collection.svelte";    export let curRoute;   export let session;    const username = $curRoute.match(/^\/@([^\/]+)$/)[1];   let outbox, followers, following, liked;    let headers = { Accept: "application/activity+json" }
+    function create_pending_block_4$1(ctx) {
     	return {
     		c: noop,
     		m: noop,
@@ -5436,11 +5930,23 @@ var app = (function () {
     	};
     }
 
-    // (67:2) {:then outbox_collection}
-    function create_then_block_3(ctx) {
+    // (1:0) <script>   import Collection from "./Collection.svelte";    export let curRoute;   export let session;    const username = $curRoute.match(/^\/@([^\/]+)$/)[1];   let outbox, followers, following, liked;    let headers = { Accept: "application/activity+json" }
+    function create_catch_block_2$1(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		i: noop,
+    		o: noop,
+    		d: noop
+    	};
+    }
+
+    // (58:36)      {#if collection.length}
+    function create_then_block_3$1(ctx) {
     	var if_block_anchor, current;
 
-    	var if_block = (ctx.outbox_collection.length) && create_if_block_1$6(ctx);
+    	var if_block = (ctx.collection.length) && create_if_block_1$5(ctx);
 
     	return {
     		c: function create() {
@@ -5455,12 +5961,12 @@ var app = (function () {
     		},
 
     		p: function update(changed, ctx) {
-    			if (ctx.outbox_collection.length) {
+    			if (ctx.collection.length) {
     				if (if_block) {
     					if_block.p(changed, ctx);
     					transition_in(if_block, 1);
     				} else {
-    					if_block = create_if_block_1$6(ctx);
+    					if_block = create_if_block_1$5(ctx);
     					if_block.c();
     					transition_in(if_block, 1);
     					if_block.m(if_block_anchor.parentNode, if_block_anchor);
@@ -5495,15 +6001,14 @@ var app = (function () {
     	};
     }
 
-    // (68:4) {#if outbox_collection.length}
-    function create_if_block_1$6(ctx) {
+    // (59:4) {#if collection.length}
+    function create_if_block_1$5(ctx) {
     	var h3, t_1, current;
 
-    	var timeline_1 = new TimeLine({
+    	var collection = new Collection({
     		props: {
-    		curRoute: ctx.timelineRoute,
     		session: ctx.session,
-    		outbox_collection: ctx.outbox_collection
+    		collection: ctx.collection
     	},
     		$$inline: true
     	});
@@ -5513,34 +6018,33 @@ var app = (function () {
     			h3 = element("h3");
     			h3.textContent = "Following";
     			t_1 = space();
-    			timeline_1.$$.fragment.c();
-    			add_location(h3, file$a, 68, 6, 1656);
+    			collection.$$.fragment.c();
+    			add_location(h3, file$c, 59, 6, 1398);
     		},
 
     		m: function mount(target, anchor) {
     			insert(target, h3, anchor);
     			insert(target, t_1, anchor);
-    			mount_component(timeline_1, target, anchor);
+    			mount_component(collection, target, anchor);
     			current = true;
     		},
 
     		p: function update(changed, ctx) {
-    			var timeline_1_changes = {};
-    			if (changed.timelineRoute) timeline_1_changes.curRoute = ctx.timelineRoute;
-    			if (changed.session) timeline_1_changes.session = ctx.session;
-    			if (changed.following) timeline_1_changes.outbox_collection = ctx.outbox_collection;
-    			timeline_1.$set(timeline_1_changes);
+    			var collection_changes = {};
+    			if (changed.session) collection_changes.session = ctx.session;
+    			if (changed.following) collection_changes.collection = ctx.collection;
+    			collection.$set(collection_changes);
     		},
 
     		i: function intro(local) {
     			if (current) return;
-    			transition_in(timeline_1.$$.fragment, local);
+    			transition_in(collection.$$.fragment, local);
 
     			current = true;
     		},
 
     		o: function outro(local) {
-    			transition_out(timeline_1.$$.fragment, local);
+    			transition_out(collection.$$.fragment, local);
     			current = false;
     		},
 
@@ -5550,38 +6054,13 @@ var app = (function () {
     				detach(t_1);
     			}
 
-    			destroy_component(timeline_1, detaching);
+    			destroy_component(collection, detaching);
     		}
     	};
     }
 
-    // (65:20)      Loading following ..   {:then outbox_collection}
-    function create_pending_block_3(ctx) {
-    	var t;
-
-    	return {
-    		c: function create() {
-    			t = text("Loading following ..");
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, t, anchor);
-    		},
-
-    		p: noop,
-    		i: noop,
-    		o: noop,
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(t);
-    			}
-    		}
-    	};
-    }
-
-    // (1:0) <script>   import TimeLine from "./TimeLine.svelte";   import { readable }
-    function create_catch_block_1(ctx) {
+    // (1:0) <script>   import Collection from "./Collection.svelte";    export let curRoute;   export let session;    const username = $curRoute.match(/^\/@([^\/]+)$/)[1];   let outbox, followers, following, liked;    let headers = { Accept: "application/activity+json" }
+    function create_pending_block_3$1(ctx) {
     	return {
     		c: noop,
     		m: noop,
@@ -5592,11 +6071,23 @@ var app = (function () {
     	};
     }
 
-    // (76:2) {:then outbox_collection}
-    function create_then_block_2(ctx) {
+    // (1:0) <script>   import Collection from "./Collection.svelte";    export let curRoute;   export let session;    const username = $curRoute.match(/^\/@([^\/]+)$/)[1];   let outbox, followers, following, liked;    let headers = { Accept: "application/activity+json" }
+    function create_catch_block_1$1(ctx) {
+    	return {
+    		c: noop,
+    		m: noop,
+    		p: noop,
+    		i: noop,
+    		o: noop,
+    		d: noop
+    	};
+    }
+
+    // (65:32)      {#if collection.length}
+    function create_then_block_2$1(ctx) {
     	var if_block_anchor, current;
 
-    	var if_block = (ctx.outbox_collection.length) && create_if_block$7(ctx);
+    	var if_block = (ctx.collection.length) && create_if_block$8(ctx);
 
     	return {
     		c: function create() {
@@ -5611,12 +6102,12 @@ var app = (function () {
     		},
 
     		p: function update(changed, ctx) {
-    			if (ctx.outbox_collection.length) {
+    			if (ctx.collection.length) {
     				if (if_block) {
     					if_block.p(changed, ctx);
     					transition_in(if_block, 1);
     				} else {
-    					if_block = create_if_block$7(ctx);
+    					if_block = create_if_block$8(ctx);
     					if_block.c();
     					transition_in(if_block, 1);
     					if_block.m(if_block_anchor.parentNode, if_block_anchor);
@@ -5651,15 +6142,14 @@ var app = (function () {
     	};
     }
 
-    // (77:4) {#if outbox_collection.length}
-    function create_if_block$7(ctx) {
+    // (66:4) {#if collection.length}
+    function create_if_block$8(ctx) {
     	var h3, t_1, current;
 
-    	var timeline_1 = new TimeLine({
+    	var collection = new Collection({
     		props: {
-    		curRoute: ctx.timelineRoute,
     		session: ctx.session,
-    		outbox_collection: ctx.outbox_collection
+    		collection: ctx.collection
     	},
     		$$inline: true
     	});
@@ -5669,34 +6159,33 @@ var app = (function () {
     			h3 = element("h3");
     			h3.textContent = "Liked";
     			t_1 = space();
-    			timeline_1.$$.fragment.c();
-    			add_location(h3, file$a, 77, 6, 1884);
+    			collection.$$.fragment.c();
+    			add_location(h3, file$c, 66, 6, 1550);
     		},
 
     		m: function mount(target, anchor) {
     			insert(target, h3, anchor);
     			insert(target, t_1, anchor);
-    			mount_component(timeline_1, target, anchor);
+    			mount_component(collection, target, anchor);
     			current = true;
     		},
 
     		p: function update(changed, ctx) {
-    			var timeline_1_changes = {};
-    			if (changed.timelineRoute) timeline_1_changes.curRoute = ctx.timelineRoute;
-    			if (changed.session) timeline_1_changes.session = ctx.session;
-    			if (changed.liked) timeline_1_changes.outbox_collection = ctx.outbox_collection;
-    			timeline_1.$set(timeline_1_changes);
+    			var collection_changes = {};
+    			if (changed.session) collection_changes.session = ctx.session;
+    			if (changed.liked) collection_changes.collection = ctx.collection;
+    			collection.$set(collection_changes);
     		},
 
     		i: function intro(local) {
     			if (current) return;
-    			transition_in(timeline_1.$$.fragment, local);
+    			transition_in(collection.$$.fragment, local);
 
     			current = true;
     		},
 
     		o: function outro(local) {
-    			transition_out(timeline_1.$$.fragment, local);
+    			transition_out(collection.$$.fragment, local);
     			current = false;
     		},
 
@@ -5706,37 +6195,24 @@ var app = (function () {
     				detach(t_1);
     			}
 
-    			destroy_component(timeline_1, detaching);
+    			destroy_component(collection, detaching);
     		}
     	};
     }
 
-    // (74:16)      Loading liked posts ..   {:then outbox_collection}
-    function create_pending_block_2(ctx) {
-    	var t;
-
+    // (1:0) <script>   import Collection from "./Collection.svelte";    export let curRoute;   export let session;    const username = $curRoute.match(/^\/@([^\/]+)$/)[1];   let outbox, followers, following, liked;    let headers = { Accept: "application/activity+json" }
+    function create_pending_block_2$1(ctx) {
     	return {
-    		c: function create() {
-    			t = text("Loading liked posts ..");
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, t, anchor);
-    		},
-
+    		c: noop,
+    		m: noop,
     		p: noop,
     		i: noop,
     		o: noop,
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(t);
-    			}
-    		}
+    		d: noop
     	};
     }
 
-    // (1:0) <script>   import TimeLine from "./TimeLine.svelte";   import { readable }
+    // (1:0) <script>   import Collection from "./Collection.svelte";    export let curRoute;   export let session;    const username = $curRoute.match(/^\/@([^\/]+)$/)[1];   let outbox, followers, following, liked;    let headers = { Accept: "application/activity+json" }
     function create_catch_block$2(ctx) {
     	return {
     		c: noop,
@@ -5748,15 +6224,14 @@ var app = (function () {
     	};
     }
 
-    // (85:2) {:then outbox_collection}
-    function create_then_block_1(ctx) {
+    // (72:33)      <h3>Posts</h3>     <Collection {session}
+    function create_then_block_1$1(ctx) {
     	var h3, t_1, current;
 
-    	var timeline_1 = new TimeLine({
+    	var collection = new Collection({
     		props: {
-    		curRoute: ctx.timelineRoute,
     		session: ctx.session,
-    		outbox_collection: ctx.outbox_collection
+    		collection: ctx.collection
     	},
     		$$inline: true
     	});
@@ -5766,34 +6241,33 @@ var app = (function () {
     			h3 = element("h3");
     			h3.textContent = "Posts";
     			t_1 = space();
-    			timeline_1.$$.fragment.c();
-    			add_location(h3, file$a, 85, 4, 2068);
+    			collection.$$.fragment.c();
+    			add_location(h3, file$c, 72, 4, 1669);
     		},
 
     		m: function mount(target, anchor) {
     			insert(target, h3, anchor);
     			insert(target, t_1, anchor);
-    			mount_component(timeline_1, target, anchor);
+    			mount_component(collection, target, anchor);
     			current = true;
     		},
 
     		p: function update(changed, ctx) {
-    			var timeline_1_changes = {};
-    			if (changed.timelineRoute) timeline_1_changes.curRoute = ctx.timelineRoute;
-    			if (changed.session) timeline_1_changes.session = ctx.session;
-    			if (changed.timeline) timeline_1_changes.outbox_collection = ctx.outbox_collection;
-    			timeline_1.$set(timeline_1_changes);
+    			var collection_changes = {};
+    			if (changed.session) collection_changes.session = ctx.session;
+    			if (changed.outbox) collection_changes.collection = ctx.collection;
+    			collection.$set(collection_changes);
     		},
 
     		i: function intro(local) {
     			if (current) return;
-    			transition_in(timeline_1.$$.fragment, local);
+    			transition_in(collection.$$.fragment, local);
 
     			current = true;
     		},
 
     		o: function outro(local) {
-    			transition_out(timeline_1.$$.fragment, local);
+    			transition_out(collection.$$.fragment, local);
     			current = false;
     		},
 
@@ -5803,37 +6277,24 @@ var app = (function () {
     				detach(t_1);
     			}
 
-    			destroy_component(timeline_1, detaching);
+    			destroy_component(collection, detaching);
     		}
     	};
     }
 
-    // (83:19)      Loading posts ..   {:then outbox_collection}
-    function create_pending_block_1(ctx) {
-    	var t;
-
+    // (1:0) <script>   import Collection from "./Collection.svelte";    export let curRoute;   export let session;    const username = $curRoute.match(/^\/@([^\/]+)$/)[1];   let outbox, followers, following, liked;    let headers = { Accept: "application/activity+json" }
+    function create_pending_block_1$1(ctx) {
     	return {
-    		c: function create() {
-    			t = text("Loading posts ..");
-    		},
-
-    		m: function mount(target, anchor) {
-    			insert(target, t, anchor);
-    		},
-
+    		c: noop,
+    		m: noop,
     		p: noop,
     		i: noop,
     		o: noop,
-
-    		d: function destroy(detaching) {
-    			if (detaching) {
-    				detach(t);
-    			}
-    		}
+    		d: noop
     	};
     }
 
-    // (37:16)    Shortly this page will show info about   <b>{username}
+    // (32:16)    Shortly this page will show info about   <b>{username}
     function create_pending_block$2(ctx) {
     	var t0, b, t1;
 
@@ -5842,7 +6303,7 @@ var app = (function () {
     			t0 = text("Shortly this page will show info about\n  ");
     			b = element("b");
     			t1 = text(ctx.username);
-    			add_location(b, file$a, 38, 2, 1009);
+    			add_location(b, file$c, 33, 2, 869);
     		},
 
     		m: function mount(target, anchor) {
@@ -5864,7 +6325,7 @@ var app = (function () {
     	};
     }
 
-    function create_fragment$b(ctx) {
+    function create_fragment$e(ctx) {
     	var await_block_anchor, promise, current;
 
     	let info = {
@@ -5873,7 +6334,7 @@ var app = (function () {
     		token: null,
     		pending: create_pending_block$2,
     		then: create_then_block$2,
-    		catch: create_catch_block_4,
+    		catch: create_catch_block_4$1,
     		value: 'user',
     		error: 'null',
     		blocks: [,,,]
@@ -5938,19 +6399,13 @@ var app = (function () {
     	};
     }
 
-    function instance$9($$self, $$props, $$invalidate) {
+    function instance$c($$self, $$props, $$invalidate) {
     	let $curRoute;
 
-    	
-      const timelineRoute = readable("/search");
-
-      let { curRoute, session } = $$props; validate_store(curRoute, 'curRoute'); component_subscribe($$self, curRoute, $$value => { $curRoute = $$value; $$invalidate('$curRoute', $curRoute); });
+    	let { curRoute, session } = $$props; validate_store(curRoute, 'curRoute'); component_subscribe($$self, curRoute, $$value => { $curRoute = $$value; $$invalidate('$curRoute', $curRoute); });
 
       const username = $curRoute.match(/^\/@([^\/]+)$/)[1];
-      let timeline = null;
-      let followers = null;
-      let following = null;
-      let liked = null;
+      let outbox, followers, following, liked;
 
       let headers = { Accept: "application/activity+json" };
       const fetchJSON = (url, cb = d => d) =>
@@ -5963,7 +6418,7 @@ var app = (function () {
           .then(d => d.json())
           .then(d => {
             console.log("[User]Fetching timeline", d.outbox);
-            $$invalidate('timeline', timeline = fetchJSON(d.outbox, d => d.first));
+            $$invalidate('outbox', outbox = fetchJSON(d.outbox, d => d));
             $$invalidate('followers', followers = fetchJSON(d.followers));
             $$invalidate('following', following = fetchJSON(d.following));
             $$invalidate('liked', liked = fetchJSON(d.liked));
@@ -5973,7 +6428,7 @@ var app = (function () {
 
     	const writable_props = ['curRoute', 'session'];
     	Object.keys($$props).forEach(key => {
-    		if (!writable_props.includes(key) && !key.startsWith('$$')) console_1$3.warn(`<User> was created with unknown prop '${key}'`);
+    		if (!writable_props.includes(key) && !key.startsWith('$$')) console_1$2.warn(`<User> was created with unknown prop '${key}'`);
     	});
 
     	$$self.$set = $$props => {
@@ -5988,11 +6443,10 @@ var app = (function () {
     	};
 
     	return {
-    		timelineRoute,
     		curRoute,
     		session,
     		username,
-    		timeline,
+    		outbox,
     		followers,
     		following,
     		liked,
@@ -6003,15 +6457,15 @@ var app = (function () {
     class User extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$9, create_fragment$b, safe_not_equal, ["curRoute", "session"]);
+    		init(this, options, instance$c, create_fragment$e, safe_not_equal, ["curRoute", "session"]);
 
     		const { ctx } = this.$$;
     		const props = options.props || {};
     		if (ctx.curRoute === undefined && !('curRoute' in props)) {
-    			console_1$3.warn("<User> was created without expected prop 'curRoute'");
+    			console_1$2.warn("<User> was created without expected prop 'curRoute'");
     		}
     		if (ctx.session === undefined && !('session' in props)) {
-    			console_1$3.warn("<User> was created without expected prop 'session'");
+    			console_1$2.warn("<User> was created without expected prop 'session'");
     		}
     	}
 
@@ -6122,7 +6576,7 @@ var app = (function () {
     	};
     }
 
-    function create_fragment$c(ctx) {
+    function create_fragment$f(ctx) {
     	var await_block_anchor, promise, current;
 
     	let info = {
@@ -6196,7 +6650,7 @@ var app = (function () {
     	};
     }
 
-    function instance$a($$self, $$props, $$invalidate) {
+    function instance$d($$self, $$props, $$invalidate) {
     	let $curRoute, $session;
 
     	let { curRoute } = $$props; validate_store(curRoute, 'curRoute'); component_subscribe($$self, curRoute, $$value => { $curRoute = $$value; $$invalidate('$curRoute', $curRoute); });
@@ -6235,7 +6689,7 @@ var app = (function () {
     class Object$1 extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$a, create_fragment$c, safe_not_equal, ["curRoute", "session"]);
+    		init(this, options, instance$d, create_fragment$f, safe_not_equal, ["curRoute", "session"]);
 
     		const { ctx } = this.$$;
     		const props = options.props || {};
@@ -6267,7 +6721,7 @@ var app = (function () {
     /* src/components/Error.svelte generated by Svelte v3.7.1 */
     const { Error: Error_1 } = globals;
 
-    function create_fragment$d(ctx) {
+    function create_fragment$g(ctx) {
     	var t0, t1, t2;
 
     	return {
@@ -6306,7 +6760,7 @@ var app = (function () {
     	};
     }
 
-    function instance$b($$self, $$props, $$invalidate) {
+    function instance$e($$self, $$props, $$invalidate) {
     	let $curRoute;
 
     	let { curRoute, session } = $$props; validate_store(curRoute, 'curRoute'); component_subscribe($$self, curRoute, $$value => { $curRoute = $$value; $$invalidate('$curRoute', $curRoute); });
@@ -6327,7 +6781,7 @@ var app = (function () {
     class Error$1 extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$b, create_fragment$d, safe_not_equal, ["curRoute", "session"]);
+    		init(this, options, instance$e, create_fragment$g, safe_not_equal, ["curRoute", "session"]);
 
     		const { ctx } = this.$$;
     		const props = options.props || {};
@@ -6356,6 +6810,58 @@ var app = (function () {
     	}
     }
 
+    const subscriber_queue = [];
+    /**
+     * Create a `Writable` store that allows both updating and reading by subscription.
+     * @param {*=}value initial value
+     * @param {StartStopNotifier=}start start and stop notifications for subscriptions
+     */
+    function writable(value, start = noop) {
+        let stop;
+        const subscribers = [];
+        function set(new_value) {
+            if (safe_not_equal(value, new_value)) {
+                value = new_value;
+                if (stop) { // store is ready
+                    const run_queue = !subscriber_queue.length;
+                    for (let i = 0; i < subscribers.length; i += 1) {
+                        const s = subscribers[i];
+                        s[1]();
+                        subscriber_queue.push(s, value);
+                    }
+                    if (run_queue) {
+                        for (let i = 0; i < subscriber_queue.length; i += 2) {
+                            subscriber_queue[i][0](subscriber_queue[i + 1]);
+                        }
+                        subscriber_queue.length = 0;
+                    }
+                }
+            }
+        }
+        function update(fn) {
+            set(fn(value));
+        }
+        function subscribe(run, invalidate = noop) {
+            const subscriber = [run, invalidate];
+            subscribers.push(subscriber);
+            if (subscribers.length === 1) {
+                stop = start(set) || noop;
+            }
+            run(value);
+            return () => {
+                const index = subscribers.indexOf(subscriber);
+                if (index !== -1) {
+                    subscribers.splice(index, 1);
+                }
+                if (subscribers.length === 0) {
+                    stop();
+                    stop = null;
+                }
+            };
+        }
+        return { set, update, subscribe };
+    }
+
     const curRoute = writable(window.location.pathname);
 
     const routes = {
@@ -6375,9 +6881,9 @@ var app = (function () {
 
     /* src/Router.svelte generated by Svelte v3.7.1 */
 
-    const file$b = "src/Router.svelte";
+    const file$d = "src/Router.svelte";
 
-    function create_fragment$e(ctx) {
+    function create_fragment$h(ctx) {
     	var div, current;
 
     	var switch_value = ctx.component;
@@ -6402,7 +6908,7 @@ var app = (function () {
     			div = element("div");
     			if (switch_instance) switch_instance.$$.fragment.c();
     			attr(div, "class", "content");
-    			add_location(div, file$b, 28, 0, 705);
+    			add_location(div, file$d, 28, 0, 708);
     		},
 
     		l: function claim(nodes) {
@@ -6473,7 +6979,7 @@ var app = (function () {
     	};
     }
 
-    function instance$c($$self, $$props, $$invalidate) {
+    function instance$f($$self, $$props, $$invalidate) {
     	let $curRoute;
 
     	let { routes, curRoute } = $$props; validate_store(curRoute, 'curRoute'); component_subscribe($$self, curRoute, $$value => { $curRoute = $$value; $$invalidate('$curRoute', $curRoute); });
@@ -6486,7 +6992,7 @@ var app = (function () {
       const unsubscribe = curRoute.subscribe(value => {
         const page = routes[$curRoute];
         let objectMatch = $curRoute.match(/^\/@([^\/]+)\/object\/(.+)$/);
-        let userMatch = $curRoute.match(/^\/@([^\/]+)$/);
+        let userMatch = $curRoute.match(/^\/@([^\/]+)\/?$/);
         if (page) $$invalidate('component', component = page.component);
         else if (objectMatch) $$invalidate('component', component = routes.object.component);
         else if (userMatch) $$invalidate('component', component = routes.user.component);
@@ -6518,7 +7024,7 @@ var app = (function () {
     class Router extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$c, create_fragment$e, safe_not_equal, ["routes", "curRoute", "updateSession", "session"]);
+    		init(this, options, instance$f, create_fragment$h, safe_not_equal, ["routes", "curRoute", "updateSession", "session"]);
 
     		const { ctx } = this.$$;
     		const props = options.props || {};
@@ -6571,7 +7077,7 @@ var app = (function () {
 
     /* src/App.svelte generated by Svelte v3.7.1 */
 
-    function create_fragment$f(ctx) {
+    function create_fragment$i(ctx) {
     	var t0, t1, current;
 
     	var navigation = new Navigation({
@@ -6685,7 +7191,7 @@ var app = (function () {
       target.classList.add("header-selected");
     }
 
-    function instance$d($$self, $$props, $$invalidate) {
+    function instance$g($$self, $$props, $$invalidate) {
     	let $session;
 
     	validate_store(session, 'session');
@@ -6716,7 +7222,7 @@ var app = (function () {
     class App extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$d, create_fragment$f, safe_not_equal, []);
+    		init(this, options, instance$g, create_fragment$i, safe_not_equal, []);
     	}
     }
 
