@@ -1,10 +1,9 @@
 <script>
   export let post;
 
-  console.log('----    header', post)
   let userId = post.hasOwnProperty("actor") ? post.actor : post.attributedTo;
+  // Pleroma could send actor as list
   if( typeof userId !== 'string' ) {
-      console.log('------     header after exract', userId, post)
       userId = userId[0]
   }
   const userName = userId.replace(/^.+\@([^/@]+)$/, "$1");

@@ -34,11 +34,7 @@
 
 <ul class="post-list">
   {#each posts as post}
-    {#if content == "timeline"}
-        <Activity {post} {session} />
-    {:else if content == "replies"}}
-        <Post {post} {session} />
-    {/if}
+        <Activity {post} {session} {content}/>
   {/each}
 </ul>
 
