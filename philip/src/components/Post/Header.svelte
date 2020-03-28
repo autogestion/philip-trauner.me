@@ -1,7 +1,12 @@
 <script>
   export let post;
 
-  const userId = post.actor || post.attributedTo;
+  console.log('----    header', post)
+  let userId = post.hasOwnProperty("actor") ? post.actor : post.attributedTo;
+  if( typeof userId !== 'string' ) {
+      console.log('------     header after exract', userId, post)
+      userId = userId[0]
+  }
   const userName = userId.replace(/^.+\@([^/@]+)$/, "$1");
 </script>
 

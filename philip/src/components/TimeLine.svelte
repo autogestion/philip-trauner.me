@@ -6,6 +6,7 @@
   import Collection from "./Collection.svelte";
 
   let pgi = pubgate_instance;
+  let content = "timeline";
 
   const getTimeline = function(tab, session) {
     switch (tab) {
@@ -40,5 +41,5 @@
 </style>
 
 {#await timeline then collection}
-  <Collection {collection} {session} />
+  <Collection {collection} {session} {content}/>
 {/await}

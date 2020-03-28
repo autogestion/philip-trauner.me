@@ -1,7 +1,9 @@
 <script>
   import { fetchCollection } from "../utils";
   import Activity from "./Activity.svelte";
-  export let collection, session;
+  import Post from "./Post.svelte";
+  import Header from "./Post/Header.svelte";
+  export let collection, session, content;
 
   let pgi = pubgate_instance;
 
@@ -26,11 +28,17 @@
   };
 
   $: posts = updatePageLinks(collection);
+
+
 </script>
 
 <ul class="post-list">
   {#each posts as post}
-    <Activity {post} {session} />
+    {#if content == "timeline"}
+        <Activity {post} {session} />
+    {:else if content == "replies"}}
+        <Post {post} {session} />
+    {/if}
   {/each}
 </ul>
 
