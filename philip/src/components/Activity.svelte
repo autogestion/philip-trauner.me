@@ -6,17 +6,19 @@
   export let post, session, content;
 
   let pgi = pubgate_instance;
-  let postObject, isReply;
-  let isReaction = false;
+  let postObject, isReply, isReaction;
 
   if (content == "replies") {
       post.object.type = "Reply"
   } else if (["Announce", "Like"].includes(post.type) || post.object.inReplyTo) {
     postObject = pgi ? post.object : ensureObject(post.object);
-    isReaction = true;
-    if (postObject.inReplyTo) {
+
+    if (["Announce", "Like"].includes(post.type)){
+        isReaction = true;
+    }
+    else if (postObject.inReplyTo) {
         isReply = true;
-        postObject.type = "Reply"
+        postObject.type = "Reply";
         if (typeof postObject.inReplyTo !== 'string'){
             postObject.inReplyTo.type = "To " + postObject.inReplyTo.type
         }
@@ -37,21 +39,18 @@
       </div>
   {:else}
       <h2 id="">.</h2>
-      {#if isReaction == false}
-        <Post post={post.object} {session}/>
-      {:else}
-        {#if isReply}
-          <Post post={postObject} {session}/>
-            <div class="reaction">
-                <Post post={post.object.inReplyTo} {session}/>
-            </div>
-        {:else}
+      {#if isReaction}
           <Header {post} />
-            <div class="reaction">
-                <Post post={postObject} {session}/>
-            </div>
-        {/if}
-
+          <div class="reaction">
+              <Post post={postObject} {session}/>
+          </div>
+      {:else if isReply}
+          <Post post={postObject} {session}/>
+          <div class="reaction">
+              <Post post={postObject.inReplyTo} {session}/>
+          </div>
+      {:else}
+          <Post post={post.object} {session}/>
       {/if}
   {/if}
 </li>

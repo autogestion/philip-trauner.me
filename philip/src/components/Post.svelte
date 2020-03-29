@@ -168,7 +168,7 @@
       </div>
       {#if $session.user}
         <div class="ra">
-          <button class="btn btn-dark ra_item" >
+          <button class="btn btn-dark ra_item" on:click={doLike}>
             Like{#if liked}d{/if}
           </button>
           <button class="btn btn-dark ra_item" on:click={togglePublish}>Add comment</button>
