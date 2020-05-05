@@ -16,3 +16,4 @@ blog
 env/*
 !env/template
 .idea/
+*.egg-info/
