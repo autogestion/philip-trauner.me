@@ -7,7 +7,7 @@
   import Collection from "./Collection.svelte";
   import Publish from "./Publish.svelte";
 
-  let pgi = pubgate_instance;
+
   let showPublish = false;
   let content = "replies";
 
@@ -21,11 +21,9 @@
   }
   let tags = post.tag;
 
-
   const fetchItem = path => {
     let headers = { Accept: "application/activity+json" };
-    const url = pgi ? path + "?cached=1" : path;
-    return fetch(url, { headers })
+    return fetch(path, { headers })
       .then(d => d.json())
       .then(d => d);
   };

@@ -1,0 +1,16 @@
+Metadata-Version: 1.1
+Name: philip
+Version: 0.2.2
+Summary: Extension for PubGate, minimalist blogging UI
+Home-page: https://github.com/autogestion/pubgate-philip
+Author: autogestion
+Author-email: UNKNOWN
+License: BSD 3-Clause
+Description: UNKNOWN
+Platform: Python 3.6 and later.
+Classifier: Development Status :: 3 - Alpha
+Classifier: Framework :: Sanic
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3.6
+Classifier: Programming Language :: Python :: Implementation :: CPython
+Classifier: Programming Language :: Python :: Implementation :: PyPy
