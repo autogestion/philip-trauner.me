@@ -1,3 +1,4 @@
+import aiohttp
 import os
 
 from sanic import response, Blueprint
@@ -34,6 +35,10 @@ async def home(request, **kwargs):
 
 @philip_v1.route('/proxy', methods=['POST'])
 async def proxy(request, **kwargs):
-    status_code, result = await fetch(request.json["url"],
-                                      pass_through=True)
+    try:
+        status_code, result = await fetch(request.json["url"],
+                                          pass_through=True)
+    except aiohttp.client_exceptions.ClientConnectorError:
+        status_code = 200
+        result = {'error': 'Refused to connect'}
     return response.json(result, status=status_code)

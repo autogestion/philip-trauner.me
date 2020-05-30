@@ -15,3 +15,4 @@ src/style/github.css
 blog
 env/*
 !env/template
+.idea/
