@@ -38,7 +38,7 @@ async def proxy(request, **kwargs):
     try:
         status_code, result = await fetch(request.json["url"],
                                           pass_through=True)
-    except aiohttp.client_exceptions.ClientConnectorError:
+    except aiohttp.ClientConnectorError:
         status_code = 200
         result = {'error': 'Refused to connect'}
     return response.json(result, status=status_code)
