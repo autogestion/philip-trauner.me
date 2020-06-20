@@ -1,7 +1,7 @@
 import os, re
 from setuptools import setup, find_packages
 
-reqs_path = "requirements/base.txt"
+reqs_path = "requirements.txt"
 with open(reqs_path) as reqs_file:
     reqs = reqs_file.read().splitlines()
 
