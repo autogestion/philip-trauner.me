@@ -1,8 +1,10 @@
 import os, re
 from setuptools import setup, find_packages
-from pip._internal.req import parse_requirements
 
-requirements = parse_requirements("requirements.txt", session='hack')
+reqs_path = "requirements/base.txt"
+with open(reqs_path) as reqs_file:
+    reqs = reqs_file.read().splitlines()
+
 
 def get_version(package):
     """
@@ -20,7 +22,7 @@ setup(
     url="https://github.com/autogestion/pubgate-philip",
     version=get_version('philip'),
     packages=find_packages(),
-    install_requires=[str(x.req) for x in requirements],
+    install_requires=reqs,
     include_package_data=True,
     license="BSD 3-Clause",
     classifiers=(
