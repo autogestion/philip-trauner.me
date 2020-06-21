@@ -71,10 +71,11 @@
   async function doLike(ev) {
     ev.preventDefault();
     if (!liked) {
+      let recipients = post.attributedTo !== $session.user.url ? [post.attributedTo] : []
       let ap_object = {
         type: "Like",
         object: post.id,
-        cc: [post.attributedTo],
+        cc: recipients,
       };
       const response = await fetch($session.user.outbox, {
         method: "POST",
@@ -90,10 +91,11 @@
   async function doAnnounce(ev) {
     ev.preventDefault();
     if (!announced) {
+      let recipients = post.attributedTo !== $session.user.url ? [post.attributedTo] : []
       let ap_object = {
         type: "Announce",
         object: post.id,
-        cc: [post.attributedTo],
+        cc: recipients,
       };
       const response = await fetch($session.user.outbox, {
         method: "POST",
