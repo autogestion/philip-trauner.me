@@ -7,7 +7,7 @@
   import Collection from "./Collection.svelte";
   import Publish from "./Publish.svelte";
 
-
+  let pgi = pubgate_instance;
   let showPublish = false;
   let content = "replies";
 
@@ -40,7 +40,7 @@
 
   const getCount = async (item, returnAll = false) => {
     if (!item) return "n/a";
-    const data = typeof item === "string" ? await fetchItem(item) : item;
+    const data = typeof item === "string" && !pgi ? await fetchItem(item): item;
     return returnAll ? data : data.totalItems;
   };
 

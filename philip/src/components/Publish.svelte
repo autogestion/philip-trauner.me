@@ -46,7 +46,9 @@
 
     if (reply) {
       ap_object.object.inReplyTo = reply.id;
-      ap_object.cc = ap_object.cc.concat(reply.attributedTo);
+      if (reply.attributedTo !== $session.user.url) {
+        ap_object.cc = ap_object.cc.concat(reply.attributedTo);
+      }
     }
     sendPost(JSON.stringify(ap_object));
   };
