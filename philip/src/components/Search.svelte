@@ -2,7 +2,7 @@
   export let session;
   export let curRoute;
 
-  import { xhr, findUser, fetchOutbox } from "../utils";
+  import { findUser, fetchOutbox, findPost, followUser } from "../utils";
   import Collection from "./Collection.svelte";
   import Post from "./Post.svelte";
 
@@ -15,114 +15,119 @@
   // search post
   let loadedPost = "";
   let postLink = "";
-  let error = "";
+  let errorUser = "";
+  let errorPost = "";
+  let errorFollow = "";
 
-  const search = async event => {
-    error = "";
+  const handleSearchUser = async event => {
+    errorUser = "";
     profile = null;
     outbox_collection = null;
     let name, domain, url;
-    if (username.match(/^http/)) {
-      url = username; // TODO
-      error = "we could do the request for you, but we don't";
-      return;
-    }
 
     const pair = username.split("@");
-    if (pair.length !== 2) {
-      return (error = "Use this format: username@domain");
+    if (username.match(/^http/) || pair.length !== 2 || pair[0] === "") {
+      return (errorUser = "Use this format: username@domain");
     }
     name = pair[0];
     domain = pair[1];
 
-
-    const res = await handleResult(findUser(name, domain));
-    if (!res.outbox) return;
-    profile = res;
+    const result = await findUser(name, domain);
+    if (!result) errorUser = "Empty response.";
+    else if (result.error) errorUser = result.error;
+    if (!result.outbox) {
+      errorUser = result.error || "User not found.";
+      return;
+    }
+    profile = result;
+    errorFollow = "";
 
     outbox_collection =
       typeof profile.outbox === "string"
-        ? await handleResult(fetchOutbox(profile.outbox))
+        ? await fetchOutbox(profile.outbox)
         : profile.outbox;
   };
 
-  const handleResult = async promise => {
-    const result = await promise;
-    if (!result) error = "Empty response.";
-    else if (result.error) error = result.error;
-    return result;
+  const handleSearchPost = async event => {
+    if (postLink === "" || !postLink.match("^http")) {
+      errorPost = "Not an URL.";
+      return;
+    }
+    errorPost = loadedPost = "";
+    const result = await findPost(postLink);
+    if (!result) errorPost = "Empty response.";
+    else if (result.error) {
+      errorPost = result.error;
+      return;
+    }
+    loadedPost = result;
+    postLink = "";
   };
 
-  const follow = async event => {
+  const handleFollow = async event => {
+    if (!$session.user) {
+      errorFollow = "You are not logged in.";
+      return;
+    }
+
     const type = event.target.innerText;
-    const { id, name } = profile; // OPTIMIZE kind of quirky to pull this form parent
-    if (!$session.user) error = "You are not logged in.";
-    else if (pubgate_instance) {
-      const body = JSON.stringify({ type, object: id });
-      const headers = { Authorization: "Bearer " + $session.token };
-      const outbox = $session.user.outbox;
-      const req = { method: "POST", body, headers };
-      const res = await fetch(outbox, req).then(d => d.json());
-      if (!res) error = `Empty response trying to ${type} ${name}`;
-      else if (res.Created === "success")
-        following = type === "Follow" ? true : false;
-      else if (res.error)
-        if (res.error === "This user is already followed") following = true;
-        else error = JSON.stringify(res.error);
-      else error = "Something went wrong.";
-    }
-  };
+    const { id, name } = profile;
+    const body = JSON.stringify({ type, object: id });
 
-  async function loadPost(event) {
-    error = loadedPost = "";
-    try {
-      const response = await xhr(postLink);
-      const { type } = response;
-      if (type !== "Note") {
-        return (error = `Wrong type: ${type}`);
-      }
-      loadedPost = response;
-      postLink = "";
-    } catch (e) {
-      error = e.message;
-    }
-  }
+    const res = await followUser($session, body);
+    if (!res) errorFollow = `Empty response trying to ${type} ${name}`;
+    else if (res.Created === "success")
+      following = type === "Follow" ? true : false;
+    else if (res.error)
+      if (res.error === "This user is already followed") following = true;
+      else errorFollow = JSON.stringify(res.error);
+    else errorFollow = "Something went wrong.";
+  };
 </script>
+
+<style>
+  .error {
+    margin-left: 10px;
+    font-size: 15px;
+  }
+</style>
 
 <br />
 Search accounts
-<form on:submit|preventDefault={search}>
+<form on:submit|preventDefault={handleSearchUser}>
   <fieldset class="form-group">
     <input
       class="form-control form-control-lg"
       type="text"
-      placeholder="Search format: username@domain"
+      placeholder="Format: username@domain"
       bind:value={username} />
   </fieldset>
   <button
     class="btn btn-sm pull-xs-right btn-info"
     type="submit"
     disabled={!username}>
-    Search user
+    Find User
   </button>
+  <span class="error text-danger">{errorUser}</span>
 </form>
 <br />
 <br />
 Load Post by link
-<form on:submit|preventDefault={loadPost}>
+<form on:submit|preventDefault={handleSearchPost}>
   <fieldset class="form-group">
     <input
       class="form-control form-control-lg"
       type="text"
-      placeholder="Copy a link here"
+      placeholder="Enter a link here"
       bind:value={postLink} />
   </fieldset>
   <button
     class="btn btn-sm pull-xs-right btn-info"
     type="submit"
     disabled={!postLink}>
-    Load post
+    Find Post
   </button>
+  <span class="error text-danger">{errorPost}</span>
 </form>
 <br />
 <br />
@@ -130,9 +135,10 @@ Load Post by link
 {#if profile}
   <h2>
     {profile.name}
-    <button class="btn btn-sm pull-xs-right btn-info" on:click={follow}>
+    <button class="btn btn-sm pull-xs-right btn-info" on:click={handleFollow}>
       {#if following}Unfollow{:else}Follow{/if}
     </button>
+    <span class="error text-danger">{errorFollow}</span>
   </h2>
   {profile.summary}
   {#if outbox_collection}
@@ -143,5 +149,3 @@ Load Post by link
 {#if typeof loadedPost === 'object'}
   <Post post={loadedPost} {session} />
 {/if}
-
-<p class="text-danger">{error}</p>

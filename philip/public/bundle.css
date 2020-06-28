@@ -1,7 +1,10 @@
 textarea.svelte-1fvj4fs{width:100%}
-a.svelte-kazhwj{text-transform:uppercase;text-decoration:underline;padding:1rem}
+.error.svelte-1y36edj{margin-left:10px;font-size:15px}
 .rs.svelte-vekltv{border-bottom:1px solid #dadde1;display:flex}.ra.svelte-vekltv{padding:4px 0;display:flex}.rs_left.svelte-vekltv{flex-grow:1}.rs_right.svelte-vekltv{margin-left:7px}.ra_item.svelte-vekltv{flex:1 0;align-items:center;color:#606770;display:flex;font-weight:600;height:32px;justify-content:center}button.svelte-vekltv{border:none;background:none}.comments.svelte-vekltv{padding-left:15px;border-left:3px solid #ff0}
+a.svelte-kazhwj{text-transform:uppercase;text-decoration:underline;padding:1rem}
 .reaction.svelte-fh8bnq{margin-left:30px}
 .original.svelte-66q9dc{font-size:0.75em}
+.overlay.svelte-h6hymt{-font:3em}.reaction-tooltip.svelte-h6hymt{display:none}.overlay.svelte-h6hymt:hover .reaction-tooltip.svelte-h6hymt{display:block;position:absolute;-top:100px;-bottom:100px;border:solid 1px black}
+div.svelte-jvacvf{float:left;text-align:center;background-color:#fff;padding:20px}img.svelte-jvacvf{display:block;height:50px}
 
 /*# sourceMappingURL=bundle.css.map */

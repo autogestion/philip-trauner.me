@@ -1,26 +1,20 @@
 <script>
   import Post from "./Post.svelte";
 
+  import { fetchLocal } from "../utils";
+
   export let curRoute;
   export let session;
   let pgi = pubgate_instance;
   let id = $curRoute.match(/^\/@([^\/]+)\/object\/(.+)$/)[2];
+  let route = pgi ? $curRoute + "?cached=1" : $curRoute;
+  let showComments = true
 
-  const fetchObject = function(path, session = {}) {
-    let headers_set = {
-      Accept: "application/activity+json",
-    };
-    const url = pgi ? path + "?cached=1" : path;
-    return fetch(base_url + url, { headers: headers_set })
-      .then(d => d.json())
-      .then(d => d);
-  };
-
-  $: object = fetchObject($curRoute, $session);
+  $: object = fetchLocal(base_url + route);
 </script>
 
 {#await object}
   So you want to see object {id}?
 {:then post}
-  <Post {post} {session} />
+  <Post {post} {session} {showComments} />
 {/await}

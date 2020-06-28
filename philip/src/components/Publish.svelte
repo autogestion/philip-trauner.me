@@ -1,6 +1,6 @@
 <script>
   import { getCreateObject, getHashTag, getMention } from "../utils/pubGate";
-  import { getUserId } from "../utils";
+  import { getUserId, publishPost } from "../utils";
 
   export let reply = null;
   export let session;
@@ -22,8 +22,8 @@
   const wrapLinksWithTags = text =>
     text.replace(/( https?:\/\/([^\s]+))/gi, '<a href="$1">$2</a>');
 
-  const publish = ev => {
-    ev.preventDefault();
+  const handleSubmit = async event => {
+    event.preventDefault();
     inProgress = true;
 
     const tags = getAllHashTags(content)
@@ -50,26 +50,16 @@
         ap_object.cc = ap_object.cc.concat(reply.attributedTo);
       }
     }
-    sendPost(JSON.stringify(ap_object));
-  };
-
-  const sendPost = async body => {
-    try {
-      const headers = { Authorization: "Bearer " + $session.token };
-      const req = { method: "POST", body, headers };
-      console.log("sending", req);
-      const res = await fetch($session.user.outbox, req).then(d => d.json());
-      console.log("response", res);
-      if (res.error) error = res.error;
-      else if (res.Created !== "success")
-        error = "Failed to create post: " + JSON.stringify(res);
-    } catch (e) {
-      error = e;
+    const body = JSON.stringify(ap_object);
+    const res = await outboxPost($session, body);
+    if (res.error) error = res.error;
+    else if (res.Created !== "success")
+      error = "Failed to create post: " + JSON.stringify(res);
+    else {
+      // TODO change route to show post?
+      content = "";
     }
-
     inProgress = false;
-    content = "";
-    // TODO change route to show post?
   };
 </script>
 
@@ -79,7 +69,7 @@
   }
 </style>
 
-<form on:submit={publish}>
+<form on:submit={handleSubmit}>
 
   <fieldset class="form-group">
     <textarea

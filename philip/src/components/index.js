@@ -1,5 +1,5 @@
-export { default as Navigation } from "./Navigation.svelte";
-export { default as Footer } from "./Footer.svelte";
+export { default as Navigation } from "./Page/Navigation.svelte";
+export { default as Footer } from "./Page/Footer.svelte";
 
 export { default as TimeLine } from "./TimeLine.svelte";
 export { default as Publish } from "./Publish.svelte";

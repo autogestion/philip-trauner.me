@@ -1,11 +1,14 @@
 <script>
-  export let post, session;
+  export let post, session, showComments;
 
   import PostContent from "./Post/Content.svelte";
   import Header from "./Post/Header.svelte";
   import Tags from "./Post/Tags.svelte";
+  import Overlay from "./Post/Overlay.svelte";
   import Collection from "./Collection.svelte";
   import Publish from "./Publish.svelte";
+
+  import { fetchJSON, outboxPost } from "../utils";
 
   let pgi = pubgate_instance;
   let showPublish = false;
@@ -14,100 +17,70 @@
   let inReply;
   let isReply = false;
 
-  let isID = typeof post === 'string';
-  let skip_comments;
-  if (!isID && post.type.startsWith("To")){
-    skip_comments = true
-  }
+  let isID = typeof post === "string";
+  // let skip_comments;
+  // if (!isID && post.type.startsWith("To")) skip_comments = true;
   let tags = post.tag;
-
-  const fetchItem = path => {
-    let headers = { Accept: "application/activity+json" };
-    return fetch(path, { headers })
-      .then(d => d.json())
-      .then(d => d);
-  };
-
 
   const togglePublish = ev => {
     ev.preventDefault();
     showPublish = !showPublish;
   };
-
-  const toggleLists = ev => {
+  const toggleShowComments = ev => {
     ev.preventDefault();
+    showComments = !showComments;
   };
 
-  const getCount = async (item, returnAll = false) => {
+  const getReactions = async item => {
     if (!item) return "n/a";
-    const data = typeof item === "string" && !pgi ? await fetchItem(item): item;
-    return returnAll ? data : data.totalItems;
+    const data = typeof item === "string" && !pgi ? await fetchJSON(item) : item;
+    // TODO only fetch on hover?
+    // Should be in cache with backend caching. With FE-caching, IDK
+
+    // TODO mastodon returns first as string: totalItems is higher level than first
+    // Not critical with BE caching
+    if (typeof data.first === "string") console.log("first is string", data);
+
+    return data;
   };
 
-  let likes = getCount(post.likes);
-  let comments = getCount(post.replies, true);
-  let announces = getCount(post.shares);
+  let likes = getReactions(post.likes);
+  let comments = getReactions(post.replies);
+  let announces = getReactions(post.shares);
 
   let liked;
   let announced;
-  if ($session.user) {
-    if (post.reactions) {
-      if (post.reactions.Like) {
-        if (post.reactions.Like[$session.user.name]) {
-          liked = true;
-        }
-      }
-    }
-
-    if (post.reactions) {
-      if (post.reactions.Announce) {
-        if (post.reactions.Announce[$session.user.name]) {
-          announced = true;
-        }
-      }
+  if ($session.user && post.reactions) {
+    if (post.reactions.Like) {
+      if (post.reactions.Like[$session.user.name]) liked = true;
+    } else if (post.reactions.Announce) {
+      if (post.reactions.Announce[$session.user.name]) announced = true;
     }
   }
 
-  async function doLike(ev) {
+  const headers = { Authorization: "Bearer " + $session.token };
+
+  // TODO is it possible to pass type (Like or Announce) and catch event to combine functions?
+  // Yes
+  const doLike = async ev => {
     ev.preventDefault();
-    if (!liked) {
-      let recipients = post.attributedTo !== $session.user.url ? [post.attributedTo] : []
-      let ap_object = {
-        type: "Like",
-        object: post.id,
-        cc: recipients,
-      };
-      const response = await fetch($session.user.outbox, {
-        method: "POST",
-        body: JSON.stringify(ap_object),
-        headers: {
-          Authorization: "Bearer " + $session.token,
-        },
-      }).then(d => d.json());
-      liked = true;
-    }
-  }
+    if (liked) return;
+    const object = post.id;
+    const cc = [post.attributedTo];
+    const body = JSON.stringify({ type: "Like", object, cc });
+    const res = await outboxPost($session, body);
+    liked = true;
+  };
 
-  async function doAnnounce(ev) {
+  const doAnnounce = async ev => {
     ev.preventDefault();
-    if (!announced) {
-      let recipients = post.attributedTo !== $session.user.url ? [post.attributedTo] : []
-      let ap_object = {
-        type: "Announce",
-        object: post.id,
-        cc: recipients,
-      };
-      const response = await fetch($session.user.outbox, {
-        method: "POST",
-        body: JSON.stringify(ap_object),
-        headers: {
-          Authorization: "Bearer " + $session.token,
-        },
-      }).then(d => d.json());
-      announced = true;
-    }
-  }
-
+    if (announced) return;
+    const object = post.id;
+    const cc = [post.attributedTo];
+    const body = JSON.stringify({ type: "Announce", object, cc });
+    const res = await outboxPost($session, body);
+    announced = true;
+  };
 </script>
 
 <style>
@@ -145,50 +118,58 @@
   }
 </style>
 
-
 {#if isID}
-    <a href="{post}">{post}</a>
+  <a href={post}>{post}</a>
 {:else}
-    <Header {post}/>
-    <Tags {tags} />
-    <PostContent {post} />
-    <div>
-      <div class="rs">
-        {#await likes then likes}
-          <span class="rs_left" on:click={toggleLists}>{likes} likes</span>
-        {/await}
-        {#await comments then comments}
-          <span class="rs_right" on:click={toggleLists}>
-            {comments.totalItems !== null ? comments.totalItems : comments} comments
-          </span>
-        {/await}
-        {#await announces then announces}
-          <span class="rs_right" on:click={toggleLists}>{announces} announces</span>
-        {/await}
-      </div>
-      {#if $session.user}
-        <div class="ra">
-          <button class="btn btn-dark ra_item" on:click={doLike}>
-            Like{#if liked}d{/if}
-          </button>
-          <button class="btn btn-dark ra_item" on:click={togglePublish}>Add comment</button>
-          <button class="btn btn-dark ra_item" on:click={doAnnounce}>
-            Announce{#if announced}d{/if}
-          </button>
-        </div>
-        {#if showPublish}
-          <Publish reply={post} {session} />
-        {/if}
-      {/if}
-      {#if !skip_comments}
-          {#await comments then collection}
-            {#if collection.totalItems}
-              <div class="comments">
-                <Collection {collection} {session} {content}/>
-              </div>
-            {/if}
-          {/await}
-      {/if}
+  <Header {post} />
+  <Tags {tags} />
+  <PostContent {post} />
+  <div>
+    <div class="rs">
+      {#await likes then likes}
+        <span class="rs_left">
+          <Overlay label={`${likes.totalItems} likes`} data={likes.first} />
+        </span>
+      {/await}
+      {#await comments then comments}
+        <span class="rs_right" on:click={toggleShowComments}>
+          {comments.totalItems} comments
+        </span>
+      {/await}
+      {#await announces then announces}
+        <span class="rs_right">
+          <Overlay
+            label={`${announces.totalItems} announces`}
+            data={announces.first} />
+        </span>
+      {/await}
     </div>
-
+    {#if $session.user}
+      <div class="ra">
+        <button class="btn btn-dark ra_item" on:click={doLike}>
+          Like
+          {#if liked}d{/if}
+        </button>
+        <button class="btn btn-dark ra_item" on:click={togglePublish}>
+          Add comment
+        </button>
+        <button class="btn btn-dark ra_item" on:click={doAnnounce}>
+          Announce
+          {#if announced}d{/if}
+        </button>
+      </div>
+      {#if showPublish}
+        <Publish reply={post} {session} />
+      {/if}
+    {/if}
+    {#if showComments}
+      {#await comments then collection}
+        {#if collection.totalItems}
+          <div class="comments">
+            <Collection {collection} {session} {content} />
+          </div>
+        {/if}
+      {/await}
+    {/if}
+  </div>
 {/if}
