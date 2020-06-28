@@ -1,6 +1,6 @@
 <script>
   import { getCreateObject, getHashTag, getMention } from "../utils/pubGate";
-  import { getUserId, publishPost } from "../utils";
+  import { getUserId, outboxPost } from "../utils";
 
   export let reply = null;
   export let session;

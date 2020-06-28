@@ -1,5 +1,5 @@
 
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 
 from philip.blueprints import philip_v1
 from philip.blueprints import home
